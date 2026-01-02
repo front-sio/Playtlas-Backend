@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("PLAYER_DATABASE_URL")
+}
+
+model PlayerStat {
+  playerId            String    @id @db.Uuid
+  userId              String    @db.Uuid
+  username            String
+  agentUserId         String?   @db.Uuid  // Links to the User ID of the agent who referred this player
+  lastActivityAt      DateTime? // Tracks the last time the player was active in the app
+  totalDepositValue   Decimal   @db.Decimal(15, 2) @default("0") // Tracks total deposit value for commission calculation
+  totalMatches        Int       @default(0)
+  matchesWon          Int       @default(0)
+  matchesLost         Int       @default(0)
+  tournamentsPlayed   Int       @default(0)
+  tournamentsWon      Int       @default(0)
+  totalEarnings       Decimal   @db.Decimal(15, 2) @default("0")
+  rankingPoints       Int       @default(1000)
+  rank                Int?
+  winRate             Decimal?  @db.Decimal(5, 2)
+  currentStreak       Int       @default(0)
+  longestStreak       Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  matchHistories      MatchHistory[]
+  achievements        Achievement[]
+
+  @@map("player_stats")
+}
+
+model MatchHistory {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  playerId            String    @db.Uuid
+  matchId             String    @db.Uuid
+  tournamentId        String    @db.Uuid
+  opponentId          String    @db.Uuid
+  result              String
+  pointsChange        Int       @default(0)
+  matchData           Json?
+  playedAt            DateTime  @default(now())
+
+  playerStat          PlayerStat @relation(fields: [playerId], references: [playerId], onDelete: Cascade)
+
+  @@map("match_history")
+}
+
+model Achievement {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  playerId            String    @db.Uuid
+  achievementType     String
+  title               String
+  description         String?
+  earnedAt            DateTime  @default(now())
+
+  playerStat          PlayerStat @relation(fields: [playerId], references: [playerId], onDelete: Cascade)
+
+  @@map("achievements")
+}

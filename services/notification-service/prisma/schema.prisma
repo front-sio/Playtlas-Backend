@@ -1,0 +1,58 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("NOTIFICATION_DATABASE_URL")
+}
+
+model Notification {
+  notificationId      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId              String    @db.Uuid
+  type                String
+  title               String
+  message             String
+  data                Json?
+  channel             String
+  status              String    @default("pending")
+  priority            String    @default("normal")
+  isRead              Boolean   @default(false)
+  readAt              DateTime?
+  sentAt              DateTime?
+  errorMessage        String?
+  retryCount          Int       @default(0)
+  createdAt           DateTime  @default(now())
+
+  @@map("notifications")
+}
+
+model NotificationTemplate {
+  templateId          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String    @unique
+  type                String
+  channel             String
+  subject             String?
+  template            String
+  variables           Json?
+  isActive            Boolean   @default(true)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@map("notification_templates")
+}
+
+model NotificationPreference {
+  preferenceId        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId              String    @unique @db.Uuid
+  emailEnabled        Boolean   @default(true)
+  smsEnabled          Boolean   @default(true)
+  pushEnabled         Boolean   @default(true)
+  tournamentUpdates   Boolean   @default(true)
+  matchReminders      Boolean   @default(true)
+  paymentAlerts       Boolean   @default(true)
+  marketingEmails     Boolean   @default(false)
+  updatedAt           DateTime  @updatedAt
+
+  @@map("notification_preferences")
+}

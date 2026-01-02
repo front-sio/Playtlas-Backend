@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("TOURNAMENT_DATABASE_URL")
+}
+
+model Tournament {
+  tournamentId        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String
+  description         String?
+  entryFee            Decimal   @db.Decimal(15, 2)
+  maxPlayers          Int       @default(32)
+  currentPlayers      Int       @default(0)
+  status              String    @default("upcoming")
+  stage               String    @default("registration")
+  competitionWalletId String?   @db.Uuid
+  startTime           DateTime?
+  endTime             DateTime?
+  seasonDuration      Int       @default(1200)
+  winnerId            String?   @db.Uuid
+  metadata            Json?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  seasons             Season[]
+  tournamentPlayers   TournamentPlayer[]
+
+  @@map("tournaments")
+}
+
+model Season {
+  seasonId            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tournamentId        String    @db.Uuid
+  seasonNumber        Int
+  name                String?
+  status              String    @default("active")
+  joiningClosed       Boolean   @default(false)
+  matchesGenerated    Boolean   @default(false)
+  startTime           DateTime
+  endTime             DateTime
+  createdAt           DateTime  @default(now())
+
+  tournament          Tournament @relation(fields: [tournamentId], references: [tournamentId], onDelete: Cascade)
+  tournamentPlayers   TournamentPlayer[]
+
+  @@map("seasons")
+}
+
+model TournamentPlayer {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tournamentId        String    @db.Uuid
+  seasonId            String?   @db.Uuid
+  playerId            String    @db.Uuid
+  status              String    @default("registered")
+  registeredAt        DateTime  @default(now())
+  eliminatedAt        DateTime?
+
+  tournament          Tournament @relation(fields: [tournamentId], references: [tournamentId], onDelete: Cascade)
+  season              Season?    @relation(fields: [seasonId], references: [seasonId], onDelete: Cascade)
+
+  @@map("tournament_players")
+}
+
+model TournamentCommandLog {
+  commandId           String   @id @db.Uuid
+  action              String
+  status              String
+  tournamentId        String?  @db.Uuid
+  error               String?
+  createdAt           DateTime @default(now())
+
+  @@map("tournament_command_logs")
+}

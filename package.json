@@ -1,0 +1,17 @@
+{
+  "name": "pool-table-backend-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for Pool Table backend setup and management",
+  "main": "setup-users-and-tournaments.js",
+  "scripts": {
+    "setup": "node setup-users-and-tournaments.js",
+    "start": "node setup-users-and-tournaments.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "uuid": "^9.0.1"
+  },
+  "keywords": ["pool", "table", "backend", "setup"],
+  "author": "",
+  "license": "ISC"
+}

@@ -1,0 +1,24 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("GAME_DATABASE_URL")
+}
+
+model GameSession {
+  sessionId   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tableId     String?   @db.Uuid
+  player1Id   String    @db.Uuid
+  player2Id   String    @db.Uuid
+  status      String    @default("pending")
+  result      Json?
+  metadata    Json?
+  startedAt   DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("game_sessions")
+}

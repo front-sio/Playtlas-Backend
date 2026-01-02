@@ -1,0 +1,121 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("ADMIN_DATABASE_URL")
+}
+
+model AdminUser {
+  adminId             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId              String    @unique @db.Uuid
+  role                String
+  permissions         Json      @default("{}")
+  isActive            Boolean   @default(true)
+  lastLogin           DateTime?
+  createdBy           String?   @db.Uuid
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  activityLogs        ActivityLog[]
+
+  @@map("admin_users")
+}
+
+model ActivityLog {
+  logId               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminId             String    @db.Uuid
+  action              String
+  resource            String
+  resourceId          String?   @db.Uuid
+  details             Json?
+  ipAddress           String?
+  userAgent           String?
+  status              String
+  errorMessage        String?
+  createdAt           DateTime  @default(now())
+
+  adminUser           AdminUser @relation(fields: [adminId], references: [adminId], onDelete: Cascade)
+
+  @@map("activity_logs")
+}
+
+model SystemSetting {
+  settingId           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key                 String    @unique
+  value               Json
+  category            String
+  description         String?
+  isPublic            Boolean   @default(false)
+  updatedBy           String?   @db.Uuid
+  updatedAt           DateTime  @updatedAt
+
+  @@map("system_settings")
+}
+
+model Report {
+  reportId            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reportType          String
+  generatedBy         String    @db.Uuid
+  parameters          Json?
+  data                Json?
+  format              String
+  status              String    @default("pending")
+  createdAt           DateTime  @default(now())
+
+  @@map("reports")
+}
+
+model ApprovalRequest {
+  approvalId          String    @id @default(dbgenerated("gen_random_uuid()")) @map("approval_id") @db.Uuid
+  resourceType        String    @map("resource_type")
+  resourceId          String?   @map("resource_id") @db.Uuid
+  action              String
+  payload             Json
+  status              String    @default("pending") // pending|approved|rejected|cancelled
+
+  requestedByUserId   String    @map("requested_by_user_id") @db.Uuid
+  requestedByRole     String    @map("requested_by_role")
+  requestedAt         DateTime  @default(now()) @map("requested_at")
+
+  approvedByUserId    String?   @map("approved_by_user_id") @db.Uuid
+  approvedByRole      String?   @map("approved_by_role")
+  approvedAt          DateTime? @map("approved_at")
+
+  rejectedByUserId    String?   @map("rejected_by_user_id") @db.Uuid
+  rejectedByRole      String?   @map("rejected_by_role")
+  rejectedAt          DateTime? @map("rejected_at")
+
+  decisionNote        String?   @map("decision_note")
+
+  // Optional correlation id used to match async lifecycle events (e.g. tournament.created).
+  commandId           String?   @unique @map("command_id")
+
+  // Break-glass support (superuser bypass)
+  bypassRequested     Boolean   @default(false) @map("bypass_requested")
+  bypassReason        String?   @map("bypass_reason")
+
+  @@map("approval_requests")
+}
+
+model TournamentReadModel {
+  tournamentId        String    @id @map("tournament_id") @db.Uuid
+  name                String
+  description         String?
+  entryFee            Decimal   @map("entry_fee") @db.Decimal(15, 2)
+  maxPlayers          Int?      @map("max_players")
+  currentPlayers      Int?      @map("current_players")
+  status              String
+  stage               String?
+  competitionWalletId String?   @map("competition_wallet_id") @db.Uuid
+  startTime           DateTime? @map("start_time")
+  endTime             DateTime? @map("end_time")
+  seasonDuration      Int?      @map("season_duration")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @default(now()) @map("updated_at")
+  lastEventAt         DateTime  @default(now()) @map("last_event_at")
+  isDeleted           Boolean   @default(false) @map("is_deleted")
+
+  @@map("tournament_read_models")
+}

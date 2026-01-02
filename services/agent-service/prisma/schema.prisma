@@ -1,0 +1,62 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("AGENT_DATABASE_URL")
+}
+
+model AgentProfile {
+  agentId     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId      String   @unique @db.Uuid
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  players     AgentPlayer[]
+  seasonLinks AgentSeasonPlayer[]
+  payouts     AgentSeasonPayout[]
+
+  @@map("agent_profiles")
+}
+
+model AgentPlayer {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  agentId     String   @db.Uuid
+  playerId    String   @unique @db.Uuid
+  createdAt   DateTime @default(now())
+
+  agent       AgentProfile @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
+
+  @@map("agent_players")
+}
+
+model AgentSeasonPlayer {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  agentId     String   @db.Uuid
+  seasonId    String   @db.Uuid
+  playerId    String   @db.Uuid
+  createdAt   DateTime @default(now())
+
+  agent       AgentProfile @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
+
+  @@unique([agentId, seasonId, playerId])
+  @@map("agent_season_players")
+}
+
+model AgentSeasonPayout {
+  payoutId    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  agentId     String   @db.Uuid
+  seasonId    String   @db.Uuid
+  playerCount Int
+  amount      Decimal  @db.Decimal(12, 2)
+  status      String   @default("paid")
+  paidAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  agent       AgentProfile @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
+
+  @@unique([agentId, seasonId])
+  @@map("agent_season_payouts")
+}

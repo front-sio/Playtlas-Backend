@@ -1,0 +1,269 @@
+services:
+  # PostgreSQL Database Server (single for all services initially)
+  postgres:
+    image: postgres:15-alpine
+    container_name: pool-game-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres # Default database
+      POSTGRES_INITDB_ARGS: "--shared_buffers=256MB --max_connections=200"
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/01-init.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pool-game-network
+
+  # Redis server for caching and job queues
+  redis:
+    image: redis:6.2-alpine
+    container_name: pool-game-redis
+    ports:
+      - "${REDIS_PORT}:6379"
+    networks:
+      - pool-game-network
+
+  # PgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pool-game-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@poolgame.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - pool-game-network
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: pool-game-api-gateway
+    ports:
+      - "${API_GATEWAY_PORT}:6000" # Internal API Gateway port
+    env_file:
+      - ./.env
+    volumes:
+      - ./api-gateway:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - auth-service
+      - player-service
+      - game-service
+      - matchmaking-service
+      - tournament-service
+      - payment-service
+      - wallet-service
+      - admin-service
+      - agent-service
+      - notification-service
+    networks:
+      - pool-game-network
+
+  # Auth Service
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: pool-game-auth-service
+    ports:
+      - "${AUTH_SERVICE_PORT}:3000" # Exposing internal port 3000
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/auth-service:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+  # Player Service
+  player-service:
+    build:
+      context: ./services/player-service
+      dockerfile: Dockerfile
+    container_name: pool-game-player-service
+    ports:
+      - "${PLAYER_SERVICE_PORT}:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/player-service:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+  # Game Service
+  game-service:
+    build:
+      context: ./services/game-service
+      dockerfile: Dockerfile
+    container_name: pool-game-game-service
+    ports:
+      - "${GAME_SERVICE_PORT}:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/game-service:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+  # Matchmaking Service
+  matchmaking-service:
+    build:
+      context: ./services/matchmaking-service
+      dockerfile: Dockerfile
+    container_name: pool-game-matchmaking-service
+    ports:
+      - "${MATCHMAKING_SERVICE_PORT}:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/matchmaking-service:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+  # Tournament Service
+  tournament-service:
+    build:
+      context: ./services/tournament-service
+      dockerfile: Dockerfile
+    container_name: pool-game-tournament-service
+    ports:
+      - "${TOURNAMENT_SERVICE_PORT}:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/tournament-service:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+  # Payment Service
+  payment-service:
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    container_name: pool-game-payment-service
+    ports:
+      - "${PAYMENT_SERVICE_PORT}:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/payment-service:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+  # Wallet Service
+  wallet-service:
+    build:
+      context: ./services/wallet-service
+      dockerfile: Dockerfile
+    container_name: pool-game-wallet-service
+    ports:
+      - "${WALLET_SERVICE_PORT}:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/wallet-service:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+  # Admin Service
+  admin-service:
+    build:
+      context: ./services/admin-service
+      dockerfile: Dockerfile
+    container_name: pool-game-admin-service
+    ports:
+      - "${ADMIN_SERVICE_PORT}:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/admin-service:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+  # Agent Service
+  agent-service:
+    build:
+      context: ./services/agent-service
+      dockerfile: Dockerfile
+    container_name: pool-game-agent-service
+    ports:
+      - "${AGENT_SERVICE_PORT}:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/agent-service:/app
+      - ./shared:/app/shared
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+  # Notification Service
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: pool-game-notification-service
+    ports:
+      - "${NOTIFICATION_SERVICE_PORT}:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./services/notification-service:/app
+      - ./shared:/app/shared # Mount shared module
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - pool-game-network
+
+volumes:
+  postgres_data:
+
+networks:
+  pool-game-network:
+    driver: bridge

@@ -1,0 +1,44 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("MATCHMAKING_DATABASE_URL")
+}
+
+model Match {
+  matchId             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tournamentId        String    @db.Uuid
+  seasonId            String?   @db.Uuid
+  stage               String
+  roundNumber         Int
+  player1Id           String    @db.Uuid
+  player2Id           String    @db.Uuid
+  player1Score        Int       @default(0)
+  player2Score        Int       @default(0)
+  winnerId            String?   @db.Uuid
+  status              String    @default("scheduled")
+  scheduledTime       DateTime?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  gameSessionId       String?
+  gameServerUrl       String?
+  player1Ready        Boolean   @default(false)
+  player2Ready        Boolean   @default(false)
+  player1ConnectionTime DateTime?
+  player2ConnectionTime DateTime?
+  suspiciousActivity  Boolean   @default(false)
+  metadata            Json?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@map("matches")
+}
+
+model Player {
+  playerId String @id @db.Uuid
+  createdAt DateTime @default(now())
+
+  @@map("players")
+}

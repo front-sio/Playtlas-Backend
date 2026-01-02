@@ -1,0 +1,158 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("PAYMENT_DATABASE_URL")
+}
+
+enum FloatRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Deposit {
+  depositId           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId              String    @db.Uuid
+  walletId            String    @db.Uuid
+  provider            String    @db.VarChar(64)
+  amount              Decimal   @db.Decimal(12, 2)
+  fee                 Decimal?  @db.Decimal(12, 2)
+  totalAmount         Decimal?  @db.Decimal(12, 2)
+  phoneNumber         String?   @db.VarChar(32)
+  referenceNumber     String    @unique @db.VarChar(100)
+  externalReference   String?   @db.VarChar(200)
+  transactionMessage  String?   @db.Text
+  status              String    @default("pending") @db.VarChar(32)
+  expiresAt           DateTime?
+  metadata            Json?
+  callbackData        Json?
+  createdAt           DateTime  @default(now())
+  completedAt         DateTime?
+  failureReason       String?
+  approvedBy          String?   @db.Uuid
+  approvedAt          DateTime?
+
+  @@map("deposits")
+}
+
+model PaymentCallback {
+  callbackId          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider            String    @db.VarChar(64)
+  referenceNumber     String?   @db.VarChar(100)
+  callbackType        String    @db.VarChar(32)
+  payload             Json?
+  signature           String?   @db.VarChar(1024)
+  isValid             Boolean   @default(true)
+  processed           Boolean   @default(false)
+  processedAt         DateTime?
+  createdAt           DateTime  @default(now())
+
+  @@map("payment_callbacks")
+}
+
+model Withdrawal {
+  withdrawalId        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId              String    @db.Uuid
+  walletId            String    @db.Uuid
+  methodId            String?   @db.Uuid
+  provider            String?   @db.VarChar(64)
+  amount              Decimal   @db.Decimal(12, 2)
+  fee                 Decimal?  @db.Decimal(12, 2)
+  totalDeducted       Decimal?  @db.Decimal(12, 2)
+  phoneNumber         String?   @db.VarChar(32)
+  referenceNumber     String    @unique @db.VarChar(100)
+  status              String    @default("pending") @db.VarChar(32)
+  requiresApproval    Boolean   @default(false)
+  externalReference   String?   @db.VarChar(200)
+  metadata            Json?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  failureReason       String?
+
+  @@map("withdrawals")
+}
+
+model PaymentAuditLog {
+  auditId             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  eventType           String    @db.VarChar(128)
+  userId              String?   @db.Uuid
+  referenceId         String?   @db.Uuid
+  referenceType       String?   @db.VarChar(64)
+  amount              Decimal?  @db.Decimal(12, 2)
+  provider            String?   @db.VarChar(64)
+  status              String?   @db.VarChar(64)
+  details             Json?
+  createdAt           DateTime  @default(now())
+
+  @@map("payment_audit_log")
+}
+
+model FloatAdjustmentRequest {
+  requestId         String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  walletId          String              @db.Uuid
+  requestedBy       String              @db.Uuid
+  type              String              @db.VarChar(20)
+  amount            Decimal             @db.Decimal(20, 2)
+  reason            String              @db.Text
+  status            FloatRequestStatus  @default(PENDING)
+  approvals         FloatApproval[]
+  rejectionReason   String?             @db.Text
+  processedAt       DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  @@index([walletId])
+  @@index([requestedBy])
+  @@index([status])
+  @@map("float_adjustment_requests")
+}
+
+model FloatApproval {
+  approvalId       String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  requestId        String                  @db.Uuid
+  request          FloatAdjustmentRequest  @relation(fields: [requestId], references: [requestId], onDelete: Cascade)
+  approvedBy       String                  @db.Uuid
+  approverRole     String                  @db.VarChar(50)
+  comments         String?                 @db.Text
+  approvedAt       DateTime                @default(now())
+
+  @@unique([requestId, approvedBy])
+  @@index([requestId])
+  @@index([approvedBy])
+  @@map("float_approvals")
+}
+
+model PaymentMethod {
+  methodId      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String    @db.Uuid
+  provider      String    @db.VarChar(64)
+  phoneNumber   String    @db.VarChar(32)
+  accountName   String?   @db.VarChar(200)
+  isDefault     Boolean   @default(false)
+  isVerified    Boolean   @default(false)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([provider, phoneNumber])
+  @@map("payment_methods")
+}
+
+model DailyLimit {
+  limitId          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String    @db.Uuid
+  date             DateTime  @default(now())
+  totalDeposits    Decimal   @default(0) @db.Decimal(20, 2)
+  totalWithdrawals Decimal   @default(0) @db.Decimal(20, 2)
+  depositCount     Int       @default(0)
+  withdrawalCount  Int       @default(0)
+  lastUpdated      DateTime  @default(now())
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@map("daily_limits")
+}
