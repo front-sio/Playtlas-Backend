@@ -107,8 +107,8 @@ services:
   # ==========================================================
   api-gateway:
     build:
-      context: ./api-gateway
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./api-gateway/Dockerfile
     container_name: pool-game-api-gateway
     ports:
       - "${API_GATEWAY_PORT:-8080}:${API_GATEWAY_INTERNAL_PORT:-6000}"

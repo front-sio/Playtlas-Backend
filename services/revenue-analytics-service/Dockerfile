@@ -9,6 +9,7 @@ RUN npm install --omit=dev
 # Copy source code
 COPY . .
 
+RUN npx prisma generate
 # Create logs directory
 RUN mkdir -p logs
 
