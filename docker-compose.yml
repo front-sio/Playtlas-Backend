@@ -1,8 +1,6 @@
-version: "3.9"
-
 services:
   # ==========================================================
-  # PostgreSQL (single instance hosting multiple databases)
+  # PostgreSQL
   # ==========================================================
   postgres:
     image: postgres:15-alpine
@@ -16,8 +14,6 @@ services:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # Must create: auth_db, player_db, game_db, matchmaking_db, tournament_db, payment_db,
-      # wallet_db, admin_db, notification_db, agent_db, revenue_analytics_db
       - ./init-db.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -44,43 +40,33 @@ services:
       - dokploy-network
 
   # ==========================================================
-  # Kafka (KRaft mode, no Zookeeper)
-  # Internal broker address: pool-game-kafka:9092
+  # Kafka (Official Apache image, KRaft mode - NO Zookeeper)
+  # Internal broker: pool-game-kafka:9092
   # ==========================================================
   kafka:
-    image: bitnami/kafka:3.7
+    image: apache/kafka:3.7.2
     container_name: pool-game-kafka
     environment:
-      - KAFKA_ENABLE_KRAFT=yes
-      - KAFKA_CFG_NODE_ID=1
-      - KAFKA_CFG_PROCESS_ROLES=broker,controller
-      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@pool-game-kafka:9093
-      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      # KRaft single-node
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@pool-game-kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
 
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://pool-game-kafka:9092
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      # Listeners
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://pool-game-kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
 
-      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
-
-      - KAFKA_CFG_NUM_PARTITIONS=3
-      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=1
-      - KAFKA_CFG_MIN_INSYNC_REPLICAS=1
-
-      - ALLOW_PLAINTEXT_LISTENER=yes
+      # Optional, convenient for dev
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: "3"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
     ports:
-      # Optional: expose for external tools; internal services do not need this
-      - "9092:9092"
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "kafka-topics.sh --bootstrap-server pool-game-kafka:9092 --list >/dev/null 2>&1 || exit 1",
-        ]
-      interval: 15s
-      timeout: 10s
-      retries: 10
+      - "9092:9092" # optional: expose for tools outside docker
     networks:
       - dokploy-network
 
@@ -117,8 +103,7 @@ services:
       - dokploy-network
 
   # ==========================================================
-  # API Gateway (internal port 6000)
-  # external: ${API_GATEWAY_PORT} -> internal: ${API_GATEWAY_INTERNAL_PORT}
+  # API Gateway (internal 6000)
   # ==========================================================
   api-gateway:
     build:
@@ -135,7 +120,6 @@ services:
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS}
       RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS}
-
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: ${REDIS_PORT}
       REDIS_URL: ${REDIS_URL}
@@ -184,18 +168,14 @@ services:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
       AUTH_DATABASE_URL: ${AUTH_DATABASE_URL}
-
       JWT_SECRET: ${JWT_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN}
       JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN}
       CORS_ORIGIN: ${CORS_ORIGIN}
-
       WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
       PLAYER_SERVICE_URL: ${PLAYER_SERVICE_URL}
-
       REDIS_URL: ${REDIS_BULLMQ_URL}
-
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_CLIENT_ID: auth-service
       KAFKA_GROUP_ID: auth-service-group
@@ -206,9 +186,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Player Service
-  # ==========================================================
   player-service:
     build:
       context: .
@@ -222,7 +200,6 @@ services:
       PLAYER_DATABASE_URL: ${PLAYER_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
       CORS_ORIGIN: ${CORS_ORIGIN}
-
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_CLIENT_ID: player-service
       KAFKA_GROUP_ID: player-service-group
@@ -233,9 +210,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Game Service
-  # ==========================================================
   game-service:
     build:
       context: .
@@ -249,13 +224,11 @@ services:
       GAME_DATABASE_URL: ${GAME_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
-
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_CLIENT_ID: game-service
       KAFKA_GROUP_ID: game-service-group
-
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
     depends_on:
       - postgres
       - redis
@@ -263,9 +236,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Matchmaking Service
-  # ==========================================================
   matchmaking-service:
     build:
       context: .
@@ -279,13 +250,11 @@ services:
       MATCHMAKING_DATABASE_URL: ${MATCHMAKING_DATABASE_URL}
       TOURNAMENT_DATABASE_URL: ${TOURNAMENT_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
-
       GAME_SERVICE_URL: ${GAME_SERVICE_URL}
       MATCH_QUEUE_ENABLED: ${MATCH_QUEUE_ENABLED}
       SOCKET_IO_CORS_ORIGIN: ${SOCKET_IO_CORS_ORIGIN}
       MATCHMAKING_TIMEOUT: ${MATCHMAKING_TIMEOUT}
       MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE}
-
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_CLIENT_ID: matchmaking-service
       KAFKA_GROUP_ID: matchmaking-service-group
@@ -296,9 +265,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Tournament Service
-  # ==========================================================
   tournament-service:
     build:
       context: .
@@ -312,10 +279,8 @@ services:
       TOURNAMENT_DATABASE_URL: ${TOURNAMENT_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
       CORS_ORIGIN: ${CORS_ORIGIN}
-
       WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
       REDIS_URL: ${REDIS_BULLMQ_URL}
-
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_CLIENT_ID: tournament-service
       KAFKA_GROUP_ID: tournament-service-group
@@ -326,9 +291,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Payment Service
-  # ==========================================================
   payment-service:
     build:
       context: .
@@ -342,14 +305,11 @@ services:
       PAYMENT_DATABASE_URL: ${PAYMENT_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
       CORS_ORIGIN: ${CORS_ORIGIN}
-
       WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
       NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL}
-
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_CLIENT_ID: payment-service
       KAFKA_GROUP_ID: payment-service-group
-
       AIRTEL_LIPA_NUMBER: ${AIRTEL_LIPA_NUMBER}
       TIGO_LIPA_NUMBER: ${TIGO_LIPA_NUMBER}
       HALOPESA_LIPA_NUMBER: ${HALOPESA_LIPA_NUMBER}
@@ -368,9 +328,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Wallet Service
-  # ==========================================================
   wallet-service:
     build:
       context: .
@@ -386,10 +344,8 @@ services:
       SYSTEM_WALLET_ID: ${SYSTEM_WALLET_ID}
       PLATFORM_WALLET_ID: ${PLATFORM_WALLET_ID}
       CORS_ORIGIN: ${CORS_ORIGIN}
-
       PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL}
       REDIS_URL: ${REDIS_BULLMQ_URL}
-
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_CLIENT_ID: wallet-service
       KAFKA_GROUP_ID: wallet-service-group
@@ -400,9 +356,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Admin Service
-  # ==========================================================
   admin-service:
     build:
       context: .
@@ -416,16 +370,13 @@ services:
       ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
       CORS_ORIGIN: ${CORS_ORIGIN}
-
       AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
       WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
       PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL}
       GAME_SERVICE_URL: ${GAME_SERVICE_URL}
       AGENT_SERVICE_URL: ${AGENT_SERVICE_URL}
-
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_CLIENT_ID: admin-service
       KAFKA_GROUP_ID: admin-service-group
@@ -436,9 +387,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Agent Service
-  # ==========================================================
   agent-service:
     build:
       context: .
@@ -451,13 +400,10 @@ services:
       NODE_ENV: ${NODE_ENV}
       AGENT_DATABASE_URL: ${AGENT_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
-
       AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
       PLAYER_SERVICE_URL: ${PLAYER_SERVICE_URL}
-
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: ${REDIS_PORT}
-
       KAFKA_BROKERS: ${KAFKA_BROKERS}
       KAFKA_CLIENT_ID: agent-service
       KAFKA_GROUP_ID: agent-service-group
@@ -468,9 +414,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Notification Service
-  # ==========================================================
   notification-service:
     build:
       context: .
@@ -492,7 +436,6 @@ services:
       SMTP_SECURE: ${SMTP_SECURE}
       FROM_EMAIL: ${FROM_EMAIL}
       APP_NAME: ${APP_NAME}
-
       SMS_API_KEY: ${SMS_API_KEY}
 
       REDIS_URL: ${REDIS_BULLMQ_URL}
@@ -500,7 +443,6 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
       TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
-
       MAILJET_API_KEY: ${MAILJET_API_KEY}
       MAILJET_API_SECRET: ${MAILJET_API_SECRET}
       MAIL_FROM_EMAIL: ${MAIL_FROM_EMAIL}
@@ -516,9 +458,7 @@ services:
     networks:
       - dokploy-network
 
-  # ==========================================================
   # Revenue Analytics Service
-  # ==========================================================
   revenue-analytics-service:
     build:
       context: .
