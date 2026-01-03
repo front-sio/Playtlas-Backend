@@ -4,8 +4,7 @@
   "description": "Scripts for Pool Table backend setup and management",
   "main": "setup-users-and-tournaments.js",
   "scripts": {
-    "setup": "node setup-users-and-tournaments.js",
-    "start": "node -e \"if (process.env.RUN_SETUP === 'true') { require('./setup-users-and-tournaments.js'); } else { console.log('Skipping setup-users-and-tournaments.js (set RUN_SETUP=true to run).'); }\""
+    "start": "node -e \"console.log('No default start script for backend setup package.');\""
   },
   "dependencies": {
     "axios": "^1.6.2",
