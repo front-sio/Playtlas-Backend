@@ -98,7 +98,7 @@ services:
       dockerfile: ./services/auth-service/Dockerfile
     container_name: pool-game-auth-service
     ports:
-      - "${AUTH_SERVICE_PORT:-3001}:3000"
+      - "${AUTH_SERVICE_PORT:-3011}:3000"  # Updated: External 3011, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -124,7 +124,7 @@ services:
       dockerfile: ./services/player-service/Dockerfile
     container_name: pool-game-player-service
     ports:
-      - "${PLAYER_SERVICE_PORT:-3002}:3000"
+      - "${PLAYER_SERVICE_PORT:-3002}:3000"  # Updated: External 3002, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -144,7 +144,7 @@ services:
       dockerfile: ./services/game-service/Dockerfile
     container_name: pool-game-game-service
     ports:
-      - "${GAME_SERVICE_PORT:-3003}:3000"
+      - "${GAME_SERVICE_PORT:-3006}:3000"  # Updated: External 3006, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -169,7 +169,7 @@ services:
       dockerfile: ./services/matchmaking-service/Dockerfile
     container_name: pool-game-matchmaking-service
     ports:
-      - "${MATCHMAKING_SERVICE_PORT:-3004}:3000"
+      - "${MATCHMAKING_SERVICE_PORT:-3009}:3000"  # Updated: External 3009, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -194,7 +194,7 @@ services:
       dockerfile: ./services/tournament-service/Dockerfile
     container_name: pool-game-tournament-service
     ports:
-      - "${TOURNAMENT_SERVICE_PORT:-3005}:3000"
+      - "${TOURNAMENT_SERVICE_PORT:-3005}:3000"  # Updated: External 3005, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -216,7 +216,7 @@ services:
       dockerfile: ./services/payment-service/Dockerfile
     container_name: pool-game-payment-service
     ports:
-      - "${PAYMENT_SERVICE_PORT:-3006}:3000"
+      - "${PAYMENT_SERVICE_PORT:-3003}:3000"  # Updated: External 3003, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -252,7 +252,7 @@ services:
       dockerfile: ./services/wallet-service/Dockerfile
     container_name: pool-game-wallet-service
     ports:
-      - "${WALLET_SERVICE_PORT:-3007}:3000"
+      - "${WALLET_SERVICE_PORT:-3004}:3000"  # Updated: External 3004, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -278,7 +278,7 @@ services:
       dockerfile: ./services/admin-service/Dockerfile
     container_name: pool-game-admin-service
     ports:
-      - "${ADMIN_SERVICE_PORT:-3008}:3000"
+      - "${ADMIN_SERVICE_PORT:-3070}:3000"  # Updated: External 3070, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -305,7 +305,7 @@ services:
       dockerfile: ./services/agent-service/Dockerfile
     container_name: pool-game-agent-service
     ports:
-      - "${AGENT_SERVICE_PORT:-3010}:3000"
+      - "${AGENT_SERVICE_PORT:-3010}:3000"  # Updated: External 3010, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -329,7 +329,7 @@ services:
       dockerfile: ./services/notification-service/Dockerfile
     container_name: pool-game-notification-service
     ports:
-      - "${NOTIFICATION_SERVICE_PORT:-3009}:3000"
+      - "${NOTIFICATION_SERVICE_PORT:-3008}:3000"  # Updated: External 3008, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
@@ -365,7 +365,7 @@ services:
       dockerfile: ./services/revenue-analytics-service/Dockerfile
     container_name: pool-game-revenue-analytics-service
     ports:
-      - "${REVENUE_ANALYTICS_SERVICE_PORT:-3011}:3000"
+      - "${REVENUE_ANALYTICS_SERVICE_PORT:-3012}:3000"  # Updated: External 3012, Internal 3000
     environment:
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
