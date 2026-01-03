@@ -14,7 +14,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/init-db.sh:/docker-entrypoint-initdb.d/01-init.sh
+      - ./init-db.sh:/docker-entrypoint-initdb.d/01-init.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
@@ -50,7 +50,7 @@ services:
   api-gateway:
     build:
       context: .
-      dockerfile: ./backend/api-gateway/Dockerfile
+      dockerfile: ./api-gateway/Dockerfile
     container_name: pool-game-api-gateway
     ports:
       - "${API_GATEWAY_PORT:-8080}:6000"
@@ -97,7 +97,7 @@ services:
   auth-service:
     build:
       context: .
-      dockerfile: ./backend/services/auth-service/Dockerfile
+      dockerfile: ./services/auth-service/Dockerfile
     container_name: pool-game-auth-service
     ports:
       - "${AUTH_SERVICE_PORT:-3001}:3000"
@@ -123,7 +123,7 @@ services:
   player-service:
     build:
       context: .
-      dockerfile: ./backend/services/player-service/Dockerfile
+      dockerfile: ./services/player-service/Dockerfile
     container_name: pool-game-player-service
     ports:
       - "${PLAYER_SERVICE_PORT:-3002}:3000"
@@ -143,7 +143,7 @@ services:
   game-service:
     build:
       context: .
-      dockerfile: ./backend/services/game-service/Dockerfile
+      dockerfile: ./services/game-service/Dockerfile
     container_name: pool-game-game-service
     ports:
       - "${GAME_SERVICE_PORT:-3003}:3000"
@@ -168,7 +168,7 @@ services:
   matchmaking-service:
     build:
       context: .
-      dockerfile: ./backend/services/matchmaking-service/Dockerfile
+      dockerfile: ./services/matchmaking-service/Dockerfile
     container_name: pool-game-matchmaking-service
     ports:
       - "${MATCHMAKING_SERVICE_PORT:-3004}:3000"
@@ -193,7 +193,7 @@ services:
   tournament-service:
     build:
       context: .
-      dockerfile: ./backend/services/tournament-service/Dockerfile
+      dockerfile: ./services/tournament-service/Dockerfile
     container_name: pool-game-tournament-service
     ports:
       - "${TOURNAMENT_SERVICE_PORT:-3005}:3000"
@@ -215,7 +215,7 @@ services:
   payment-service:
     build:
       context: .
-      dockerfile: ./backend/services/payment-service/Dockerfile
+      dockerfile: ./services/payment-service/Dockerfile
     container_name: pool-game-payment-service
     ports:
       - "${PAYMENT_SERVICE_PORT:-3006}:3000"
@@ -251,7 +251,7 @@ services:
   wallet-service:
     build:
       context: .
-      dockerfile: ./backend/services/wallet-service/Dockerfile
+      dockerfile: ./services/wallet-service/Dockerfile
     container_name: pool-game-wallet-service
     ports:
       - "${WALLET_SERVICE_PORT:-3007}:3000"
@@ -277,7 +277,7 @@ services:
   admin-service:
     build:
       context: .
-      dockerfile: ./backend/services/admin-service/Dockerfile
+      dockerfile: ./services/admin-service/Dockerfile
     container_name: pool-game-admin-service
     ports:
       - "${ADMIN_SERVICE_PORT:-3008}:3000"
@@ -304,7 +304,7 @@ services:
   agent-service:
     build:
       context: .
-      dockerfile: ./backend/services/agent-service/Dockerfile
+      dockerfile: ./services/agent-service/Dockerfile
     container_name: pool-game-agent-service
     ports:
       - "${AGENT_SERVICE_PORT:-3010}:3000"
@@ -328,7 +328,7 @@ services:
   notification-service:
     build:
       context: .
-      dockerfile: ./backend/services/notification-service/Dockerfile
+      dockerfile: ./services/notification-service/Dockerfile
     container_name: pool-game-notification-service
     ports:
       - "${NOTIFICATION_SERVICE_PORT:-3009}:3000"
@@ -364,7 +364,7 @@ services:
   revenue-analytics-service:
     build:
       context: .
-      dockerfile: ./backend/services/revenue-analytics-service/Dockerfile
+      dockerfile: ./services/revenue-analytics-service/Dockerfile
     container_name: pool-game-revenue-analytics-service
     ports:
       - "${REVENUE_ANALYTICS_SERVICE_PORT:-3011}:3000"
