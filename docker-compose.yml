@@ -140,7 +140,6 @@ services:
       KAFKA_CLIENT_ID: auth-service
       KAFKA_GROUP_ID: auth-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -164,7 +163,6 @@ services:
       KAFKA_CLIENT_ID: player-service
       KAFKA_GROUP_ID: player-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -190,7 +188,6 @@ services:
       KAFKA_CLIENT_ID: game-service
       KAFKA_GROUP_ID: game-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -219,7 +216,6 @@ services:
       KAFKA_CLIENT_ID: matchmaking-service
       KAFKA_GROUP_ID: matchmaking-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -245,7 +241,6 @@ services:
       KAFKA_CLIENT_ID: tournament-service
       KAFKA_GROUP_ID: tournament-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -282,7 +277,6 @@ services:
       SYSTEM_WALLET_ID: ${SYSTEM_WALLET_ID}
       PLATFORM_WALLET_ID: ${PLATFORM_WALLET_ID}
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -310,7 +304,6 @@ services:
       KAFKA_CLIENT_ID: wallet-service
       KAFKA_GROUP_ID: wallet-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -341,7 +334,6 @@ services:
       KAFKA_CLIENT_ID: admin-service
       KAFKA_GROUP_ID: admin-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -368,7 +360,6 @@ services:
       KAFKA_CLIENT_ID: agent-service
       KAFKA_GROUP_ID: agent-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -412,7 +403,6 @@ services:
       KAFKA_CLIENT_ID: notification-service
       KAFKA_GROUP_ID: notification-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
@@ -446,7 +436,6 @@ services:
       KAFKA_CLIENT_ID: revenue-analytics-service
       KAFKA_GROUP_ID: revenue-analytics-service-group
     depends_on:
-      - postgres
       - redis
       - kafka
     networks:
