@@ -7,12 +7,60 @@
 
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
+const dotenv = require('dotenv');
+const fs = require('fs');
+const path = require('path');
+
+dotenv.config({ path: path.join(__dirname, '.env') });
+
+const runningInDocker = fs.existsSync('/.dockerenv');
+
+function normalizeServiceUrl(rawUrl, fallbackUrl, hostPort) {
+  const urlString = rawUrl || fallbackUrl;
+  if (runningInDocker) {
+    return urlString;
+  }
+
+  try {
+    const url = new URL(urlString);
+    const isDockerHostname =
+      url.hostname.includes('pool-game-') || url.hostname.endsWith('-service');
+
+    if (!isDockerHostname) {
+      return urlString;
+    }
+
+    url.hostname = 'localhost';
+    if (hostPort) {
+      url.port = String(hostPort);
+    }
+    return url.toString().replace(/\/$/, '');
+  } catch (error) {
+    return urlString;
+  }
+}
 
 // Configuration
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://[::1]:3011';
-const ADMIN_SERVICE_URL = process.env.ADMIN_SERVICE_URL || 'http://[::1]:3070';
-const TOURNAMENT_SERVICE_URL = process.env.TOURNAMENT_SERVICE_URL || 'http://[::1]:3010';
-const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://[::1]:3002';
+const AUTH_SERVICE_URL = normalizeServiceUrl(
+  process.env.AUTH_SERVICE_URL,
+  'http://[::1]:3011',
+  process.env.AUTH_SERVICE_PORT
+);
+const ADMIN_SERVICE_URL = normalizeServiceUrl(
+  process.env.ADMIN_SERVICE_URL,
+  'http://[::1]:3070',
+  process.env.ADMIN_SERVICE_PORT
+);
+const TOURNAMENT_SERVICE_URL = normalizeServiceUrl(
+  process.env.TOURNAMENT_SERVICE_URL,
+  'http://[::1]:3010',
+  process.env.TOURNAMENT_SERVICE_PORT
+);
+const WALLET_SERVICE_URL = normalizeServiceUrl(
+  process.env.WALLET_SERVICE_URL,
+  'http://[::1]:3002',
+  process.env.WALLET_SERVICE_PORT
+);
 
 // Admin credentials (you should change these in production)
 const ADMIN_CREDENTIALS = {

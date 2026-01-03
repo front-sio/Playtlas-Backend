@@ -5,7 +5,7 @@
   "main": "setup-users-and-tournaments.js",
   "scripts": {
     "setup": "node setup-users-and-tournaments.js",
-    "start": "node setup-users-and-tournaments.js"
+    "start": "node -e \"if (process.env.RUN_SETUP === 'true') { require('./setup-users-and-tournaments.js'); } else { console.log('Skipping setup-users-and-tournaments.js (set RUN_SETUP=true to run).'); }\""
   },
   "dependencies": {
     "axios": "^1.6.2",
