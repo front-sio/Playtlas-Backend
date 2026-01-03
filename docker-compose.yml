@@ -1,34 +1,36 @@
+version: '3.8'
+
 services:
-  # PostgreSQL Database Server (single for all services initially)
+  # PostgreSQL Database Server
   postgres:
     image: postgres:15-alpine
     container_name: pool-game-db
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: postgres # Default database
+      POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_INITDB_ARGS: "--shared_buffers=256MB --max_connections=200"
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init-db.sh:/docker-entrypoint-initdb.d/01-init.sh
+      - ./backend/init-db.sh:/docker-entrypoint-initdb.d/01-init.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Redis server for caching and job queues
   redis:
     image: redis:6.2-alpine
     container_name: pool-game-redis
     ports:
-      - "${REDIS_PORT}:6379"
+      - "${REDIS_PORT:-6379}:6379"
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # PgAdmin for database management
   pgadmin:
@@ -42,21 +44,40 @@ services:
     depends_on:
       - postgres
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # API Gateway
   api-gateway:
     build:
-      context: ./api-gateway
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/api-gateway/Dockerfile
     container_name: pool-game-api-gateway
     ports:
-      - "${API_GATEWAY_PORT}:6000" # Internal API Gateway port
-    env_file:
-      - ./.env
-    volumes:
-      - ./api-gateway:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${API_GATEWAY_PORT:-8080}:6000"
+    environment:
+      PORT: ${API_GATEWAY_INTERNAL_PORT}
+      NODE_ENV: ${NODE_ENV}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
+      PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL}
+      TOURNAMENT_SERVICE_URL: ${TOURNAMENT_SERVICE_URL}
+      PLAYER_SERVICE_URL: ${PLAYER_SERVICE_URL}
+      MATCHMAKING_SERVICE_URL: ${MATCHMAKING_SERVICE_URL}
+      GAME_SERVICE_URL: ${GAME_SERVICE_URL}
+      ADMIN_SERVICE_URL: ${ADMIN_SERVICE_URL}
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL}
+      REVENUE_ANALYTICS_SERVICE_URL: ${REVENUE_ANALYTICS_SERVICE_URL}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      SOCKET_IO_CORS_ORIGIN: ${SOCKET_IO_CORS_ORIGIN}
     depends_on:
       - auth-service
       - player-service
@@ -68,202 +89,324 @@ services:
       - admin-service
       - agent-service
       - notification-service
+      - revenue-analytics-service
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Auth Service
   auth-service:
     build:
-      context: ./services/auth-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/auth-service/Dockerfile
     container_name: pool-game-auth-service
     ports:
-      - "${AUTH_SERVICE_PORT}:3000" # Exposing internal port 3000
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/auth-service:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${AUTH_SERVICE_PORT:-3001}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      AUTH_DATABASE_URL: ${AUTH_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
+      PLAYER_SERVICE_URL: ${PLAYER_SERVICE_URL}
+      REDIS_URL: ${REDIS_BULLMQ_URL}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Player Service
   player-service:
     build:
-      context: ./services/player-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/player-service/Dockerfile
     container_name: pool-game-player-service
     ports:
-      - "${PLAYER_SERVICE_PORT}:3000"
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/player-service:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${PLAYER_SERVICE_PORT:-3002}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      PLAYER_DATABASE_URL: ${PLAYER_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Game Service
   game-service:
     build:
-      context: ./services/game-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/game-service/Dockerfile
     container_name: pool-game-game-service
     ports:
-      - "${GAME_SERVICE_PORT}:3000"
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/game-service:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${GAME_SERVICE_PORT:-3003}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      GAME_DATABASE_URL: ${GAME_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_CLIENT_ID: game-service
+      KAFKA_GROUP_ID: game-service-group
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Matchmaking Service
   matchmaking-service:
     build:
-      context: ./services/matchmaking-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/matchmaking-service/Dockerfile
     container_name: pool-game-matchmaking-service
     ports:
-      - "${MATCHMAKING_SERVICE_PORT}:3000"
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/matchmaking-service:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${MATCHMAKING_SERVICE_PORT:-3004}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      MATCHMAKING_DATABASE_URL: ${MATCHMAKING_DATABASE_URL}
+      TOURNAMENT_DATABASE_URL: ${TOURNAMENT_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      GAME_SERVICE_URL: ${GAME_SERVICE_URL}
+      MATCH_QUEUE_ENABLED: ${MATCH_QUEUE_ENABLED}
+      SOCKET_IO_CORS_ORIGIN: ${SOCKET_IO_CORS_ORIGIN}
+      MATCHMAKING_TIMEOUT: ${MATCHMAKING_TIMEOUT}
+      MAX_QUEUE_SIZE: ${MAX_QUEUE_SIZE}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Tournament Service
   tournament-service:
     build:
-      context: ./services/tournament-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/tournament-service/Dockerfile
     container_name: pool-game-tournament-service
     ports:
-      - "${TOURNAMENT_SERVICE_PORT}:3000"
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/tournament-service:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${TOURNAMENT_SERVICE_PORT:-3005}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      TOURNAMENT_DATABASE_URL: ${TOURNAMENT_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
+      REDIS_URL: ${REDIS_BULLMQ_URL}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Payment Service
   payment-service:
     build:
-      context: ./services/payment-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/payment-service/Dockerfile
     container_name: pool-game-payment-service
     ports:
-      - "${PAYMENT_SERVICE_PORT}:3000"
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/payment-service:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${PAYMENT_SERVICE_PORT:-3006}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      PAYMENT_DATABASE_URL: ${PAYMENT_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
+      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_CLIENT_ID: payment-service
+      KAFKA_GROUP_ID: payment-group
+      AIRTEL_LIPA_NUMBER: ${AIRTEL_LIPA_NUMBER}
+      TIGO_LIPA_NUMBER: ${TIGO_LIPA_NUMBER}
+      HALOPESA_LIPA_NUMBER: ${HALOPESA_LIPA_NUMBER}
+      MIN_DEPOSIT_AMOUNT: ${MIN_DEPOSIT_AMOUNT}
+      MAX_DEPOSIT_AMOUNT: ${MAX_DEPOSIT_AMOUNT}
+      MIN_WITHDRAWAL_AMOUNT: ${MIN_WITHDRAWAL_AMOUNT}
+      MAX_WITHDRAWAL_AMOUNT: ${MAX_WITHDRAWAL_AMOUNT}
+      WITHDRAWAL_FEE_PERCENTAGE: ${WITHDRAWAL_FEE_PERCENTAGE}
+      DEPOSIT_FEE_PERCENTAGE: ${DEPOSIT_FEE_PERCENTAGE}
+      SYSTEM_WALLET_ID: ${SYSTEM_WALLET_ID}
+      PLATFORM_WALLET_ID: ${PLATFORM_WALLET_ID}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Wallet Service
   wallet-service:
     build:
-      context: ./services/wallet-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/wallet-service/Dockerfile
     container_name: pool-game-wallet-service
     ports:
-      - "${WALLET_SERVICE_PORT}:3000"
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/wallet-service:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${WALLET_SERVICE_PORT:-3007}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      WALLET_DATABASE_URL: ${WALLET_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      SYSTEM_WALLET_ID: ${SYSTEM_WALLET_ID}
+      PLATFORM_WALLET_ID: ${PLATFORM_WALLET_ID}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_CLIENT_ID: wallet-service
+      REDIS_URL: ${REDIS_BULLMQ_URL}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Admin Service
   admin-service:
     build:
-      context: ./services/admin-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/admin-service/Dockerfile
     container_name: pool-game-admin-service
     ports:
-      - "${ADMIN_SERVICE_PORT}:3000"
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/admin-service:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${ADMIN_SERVICE_PORT:-3008}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
+      PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL}
+      GAME_SERVICE_URL: ${GAME_SERVICE_URL}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Agent Service
   agent-service:
     build:
-      context: ./services/agent-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/agent-service/Dockerfile
     container_name: pool-game-agent-service
     ports:
-      - "${AGENT_SERVICE_PORT}:3000"
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/agent-service:/app
-      - ./shared:/app/shared
+      - "${AGENT_SERVICE_PORT:-3010}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      AGENT_DATABASE_URL: ${AGENT_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      PLAYER_SERVICE_URL: ${PLAYER_SERVICE_URL}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
 
   # Notification Service
   notification-service:
     build:
-      context: ./services/notification-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/services/notification-service/Dockerfile
     container_name: pool-game-notification-service
     ports:
-      - "${NOTIFICATION_SERVICE_PORT}:3000"
-    env_file:
-      - ./.env
-    volumes:
-      - ./services/notification-service:/app
-      - ./shared:/app/shared # Mount shared module
+      - "${NOTIFICATION_SERVICE_PORT:-3009}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      NOTIFICATION_DATABASE_URL: ${NOTIFICATION_DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      API_GATEWAY_SOCKET_TOKEN: ${API_GATEWAY_SOCKET_TOKEN}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_SECURE: ${SMTP_SECURE}
+      FROM_EMAIL: ${FROM_EMAIL}
+      APP_NAME: ${APP_NAME}
+      SMS_API_KEY: ${SMS_API_KEY}
+      REDIS_URL: ${REDIS_BULLMQ_URL}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+      MAILJET_API_KEY: ${MAILJET_API_KEY}
+      MAILJET_API_SECRET: ${MAILJET_API_SECRET}
+      MAIL_FROM_EMAIL: ${MAIL_FROM_EMAIL}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME}
     depends_on:
       - postgres
       - redis
     networks:
-      - pool-game-network
+      - dokploy-network
+
+  # Revenue Analytics Service
+  revenue-analytics-service:
+    build:
+      context: .
+      dockerfile: ./backend/services/revenue-analytics-service/Dockerfile
+    container_name: pool-game-revenue-analytics-service
+    ports:
+      - "${REVENUE_ANALYTICS_SERVICE_PORT:-3011}:3000"
+    environment:
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+      DATABASE_URL: ${REVENUE_ANALYTICS_DATABASE_URL}
+      FRONTEND_URL: ${FRONTEND_URL}
+      WALLET_SERVICE_URL: ${WALLET_SERVICE_URL}
+      PAYMENT_SERVICE_URL: ${PAYMENT_SERVICE_URL}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL}
+      TOURNAMENT_SERVICE_URL: ${TOURNAMENT_SERVICE_URL}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      LOG_LEVEL: ${LOG_LEVEL}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS}
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - dokploy-network
+
+  # Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: ./frontend/Dockerfile
+    container_name: pool-game-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV}
+      NEXT_PUBLIC_API_URL: ${REACT_APP_API_URL}
+      NEXT_PUBLIC_SOCKET_URL: ${REACT_APP_SOCKET_URL}
+    depends_on:
+      - api-gateway
+    networks:
+      - dokploy-network
 
 volumes:
   postgres_data:
 
 networks:
-  pool-game-network:
-    driver: bridge
+  dokploy-network:
+    external: true
