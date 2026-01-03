@@ -387,23 +387,6 @@ services:
     networks:
       - dokploy-network
 
-  # Frontend
-  frontend:
-    build:
-      context: .
-      dockerfile: ./frontend/Dockerfile
-    container_name: pool-game-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      NODE_ENV: ${NODE_ENV}
-      NEXT_PUBLIC_API_URL: ${REACT_APP_API_URL}
-      NEXT_PUBLIC_SOCKET_URL: ${REACT_APP_SOCKET_URL}
-    depends_on:
-      - api-gateway
-    networks:
-      - dokploy-network
-
 volumes:
   postgres_data:
 
