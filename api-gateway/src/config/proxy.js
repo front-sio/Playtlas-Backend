@@ -1,7 +1,12 @@
 // backend/api-gateway/config/proxy.js
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const logger = require('../utils/logger');
-const { authMiddleware } = require('../../../shared/middlewares/authMiddleware');
+let authMiddleware;
+try {
+  ({ authMiddleware } = require('../../../shared/middlewares/authMiddleware'));
+} catch (error) {
+  ({ authMiddleware } = require('../../shared/middlewares/authMiddleware'));
+}
 
 const setupProxy = (app) => {
   // Auth Service
