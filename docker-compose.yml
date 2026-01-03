@@ -163,9 +163,9 @@ services:
       dockerfile: ./services/auth-service/Dockerfile
     container_name: pool-game-auth-service
     ports:
-      - "${AUTH_SERVICE_PORT:-3011}:3000"
+      - "${AUTH_SERVICE_PORT:-3011}:3011"
     environment:
-      PORT: ${PORT}
+      PORT: ${AUTH_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       AUTH_DATABASE_URL: ${AUTH_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -193,9 +193,9 @@ services:
       dockerfile: ./services/player-service/Dockerfile
     container_name: pool-game-player-service
     ports:
-      - "${PLAYER_SERVICE_PORT:-3002}:3000"
+      - "${PLAYER_SERVICE_PORT:-3002}:3002"
     environment:
-      PORT: ${PORT}
+      PORT: ${PLAYER_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       PLAYER_DATABASE_URL: ${PLAYER_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -217,9 +217,9 @@ services:
       dockerfile: ./services/game-service/Dockerfile
     container_name: pool-game-game-service
     ports:
-      - "${GAME_SERVICE_PORT:-3006}:3000"
+      - "${GAME_SERVICE_PORT:-3006}:3006"
     environment:
-      PORT: ${PORT}
+      PORT: ${GAME_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       GAME_DATABASE_URL: ${GAME_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -243,9 +243,9 @@ services:
       dockerfile: ./services/matchmaking-service/Dockerfile
     container_name: pool-game-matchmaking-service
     ports:
-      - "${MATCHMAKING_SERVICE_PORT:-3009}:3000"
+      - "${MATCHMAKING_SERVICE_PORT:-3009}:3009"
     environment:
-      PORT: ${PORT}
+      PORT: ${MATCHMAKING_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       MATCHMAKING_DATABASE_URL: ${MATCHMAKING_DATABASE_URL}
       TOURNAMENT_DATABASE_URL: ${TOURNAMENT_DATABASE_URL}
@@ -272,9 +272,9 @@ services:
       dockerfile: ./services/tournament-service/Dockerfile
     container_name: pool-game-tournament-service
     ports:
-      - "${TOURNAMENT_SERVICE_PORT:-3005}:3000"
+      - "${TOURNAMENT_SERVICE_PORT:-3005}:3005"
     environment:
-      PORT: ${PORT}
+      PORT: ${TOURNAMENT_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       TOURNAMENT_DATABASE_URL: ${TOURNAMENT_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -298,9 +298,9 @@ services:
       dockerfile: ./services/payment-service/Dockerfile
     container_name: pool-game-payment-service
     ports:
-      - "${PAYMENT_SERVICE_PORT:-3003}:3000"
+      - "${PAYMENT_SERVICE_PORT:-3003}:3003"
     environment:
-      PORT: ${PORT}
+      PORT: ${PAYMENT_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       PAYMENT_DATABASE_URL: ${PAYMENT_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -335,9 +335,9 @@ services:
       dockerfile: ./services/wallet-service/Dockerfile
     container_name: pool-game-wallet-service
     ports:
-      - "${WALLET_SERVICE_PORT:-3004}:3000"
+      - "${WALLET_SERVICE_PORT:-3004}:3004"
     environment:
-      PORT: ${PORT}
+      PORT: ${WALLET_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       WALLET_DATABASE_URL: ${WALLET_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -363,9 +363,9 @@ services:
       dockerfile: ./services/admin-service/Dockerfile
     container_name: pool-game-admin-service
     ports:
-      - "${ADMIN_SERVICE_PORT:-3070}:3000"
+      - "${ADMIN_SERVICE_PORT:-3070}:3070"
     environment:
-      PORT: ${PORT}
+      PORT: ${ADMIN_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -394,9 +394,9 @@ services:
       dockerfile: ./services/agent-service/Dockerfile
     container_name: pool-game-agent-service
     ports:
-      - "${AGENT_SERVICE_PORT:-3010}:3000"
+      - "${AGENT_SERVICE_PORT:-3010}:3010"
     environment:
-      PORT: ${PORT}
+      PORT: ${AGENT_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       AGENT_DATABASE_URL: ${AGENT_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -421,9 +421,9 @@ services:
       dockerfile: ./services/notification-service/Dockerfile
     container_name: pool-game-notification-service
     ports:
-      - "${NOTIFICATION_SERVICE_PORT:-3008}:3000"
+      - "${NOTIFICATION_SERVICE_PORT:-3008}:3008"
     environment:
-      PORT: ${PORT}
+      PORT: ${NOTIFICATION_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       NOTIFICATION_DATABASE_URL: ${NOTIFICATION_DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -465,9 +465,9 @@ services:
       dockerfile: ./services/revenue-analytics-service/Dockerfile
     container_name: pool-game-revenue-analytics-service
     ports:
-      - "${REVENUE_ANALYTICS_SERVICE_PORT:-3012}:3000"
+      - "${REVENUE_ANALYTICS_SERVICE_PORT:-3012}:3012"
     environment:
-      PORT: ${PORT}
+      PORT: ${REVENUE_ANALYTICS_SERVICE_PORT}
       NODE_ENV: ${NODE_ENV}
       DATABASE_URL: ${REVENUE_ANALYTICS_DATABASE_URL}
       FRONTEND_URL: ${FRONTEND_URL}

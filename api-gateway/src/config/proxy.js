@@ -3,9 +3,13 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const logger = require('../utils/logger');
 let authMiddleware;
 try {
-  ({ authMiddleware } = require('../../../shared/middlewares/authMiddleware'));
+  ({ authMiddleware } = require('/shared/middlewares/authMiddleware'));
 } catch (error) {
-  ({ authMiddleware } = require('../../shared/middlewares/authMiddleware'));
+  try {
+    ({ authMiddleware } = require('../../shared/middlewares/authMiddleware'));
+  } catch (innerError) {
+    ({ authMiddleware } = require('../../../shared/middlewares/authMiddleware'));
+  }
 }
 
 const setupProxy = (app) => {
