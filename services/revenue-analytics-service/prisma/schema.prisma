@@ -166,7 +166,7 @@ model AggregationJob {
   jobType         String    // 'platform_revenue', 'agent_revenue', 'player_revenue'
   status          String    // 'pending', 'running', 'completed', 'failed'
   startDate       DateTime  @db.Date
-  endDate         DateTime  @db.Date?
+  endDate         DateTime? @db.Date
   recordsProcessed Int       @default(0)
   errorMessage    String?
   startedAt       DateTime?
