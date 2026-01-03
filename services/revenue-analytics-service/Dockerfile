@@ -13,6 +13,8 @@ RUN npm install --omit=dev --prefix /shared
 COPY services/revenue-analytics-service/ ./
 COPY shared /shared
 
+RUN ln -s /shared /app/shared
+
 RUN npx prisma generate
 RUN mkdir -p logs
 

@@ -10,6 +10,8 @@ COPY shared/package*.json /shared/
 RUN npm install --omit=dev --prefix /shared
 COPY shared /shared
 
+RUN ln -s /shared /app/shared
+
 EXPOSE 6000
 
 CMD ["npm", "start"]
