@@ -107,8 +107,8 @@ services:
   # ==========================================================
   api-gateway:
     build:
-      context: .
-      dockerfile: ./api-gateway/Dockerfile
+      context: ./api-gateway
+      dockerfile: Dockerfile
     container_name: pool-game-api-gateway
     ports:
       - "${API_GATEWAY_PORT:-8080}:${API_GATEWAY_INTERNAL_PORT:-6000}"
@@ -159,8 +159,8 @@ services:
   # ==========================================================
   auth-service:
     build:
-      context: .
-      dockerfile: ./services/auth-service/Dockerfile
+      context: ./services/auth-service
+      dockerfile: Dockerfile
     container_name: pool-game-auth-service
     ports:
       - "${AUTH_SERVICE_PORT:-3011}:3000"
@@ -189,8 +189,8 @@ services:
   # Player Service
   player-service:
     build:
-      context: .
-      dockerfile: ./services/player-service/Dockerfile
+      context: ./services/player-service
+      dockerfile: Dockerfile
     container_name: pool-game-player-service
     ports:
       - "${PLAYER_SERVICE_PORT:-3002}:3000"
@@ -213,8 +213,8 @@ services:
   # Game Service
   game-service:
     build:
-      context: .
-      dockerfile: ./services/game-service/Dockerfile
+      context: ./services/game-service
+      dockerfile: Dockerfile
     container_name: pool-game-game-service
     ports:
       - "${GAME_SERVICE_PORT:-3006}:3000"
@@ -239,8 +239,8 @@ services:
   # Matchmaking Service
   matchmaking-service:
     build:
-      context: .
-      dockerfile: ./services/matchmaking-service/Dockerfile
+      context: ./services/matchmaking-service
+      dockerfile: Dockerfile
     container_name: pool-game-matchmaking-service
     ports:
       - "${MATCHMAKING_SERVICE_PORT:-3009}:3000"
@@ -268,8 +268,8 @@ services:
   # Tournament Service
   tournament-service:
     build:
-      context: .
-      dockerfile: ./services/tournament-service/Dockerfile
+      context: ./services/tournament-service
+      dockerfile: Dockerfile
     container_name: pool-game-tournament-service
     ports:
       - "${TOURNAMENT_SERVICE_PORT:-3005}:3000"
@@ -294,8 +294,8 @@ services:
   # Payment Service
   payment-service:
     build:
-      context: .
-      dockerfile: ./services/payment-service/Dockerfile
+      context: ./services/payment-service
+      dockerfile: Dockerfile
     container_name: pool-game-payment-service
     ports:
       - "${PAYMENT_SERVICE_PORT:-3003}:3000"
@@ -331,8 +331,8 @@ services:
   # Wallet Service
   wallet-service:
     build:
-      context: .
-      dockerfile: ./services/wallet-service/Dockerfile
+      context: ./services/wallet-service
+      dockerfile: Dockerfile
     container_name: pool-game-wallet-service
     ports:
       - "${WALLET_SERVICE_PORT:-3004}:3000"
@@ -359,8 +359,8 @@ services:
   # Admin Service
   admin-service:
     build:
-      context: .
-      dockerfile: ./services/admin-service/Dockerfile
+      context: ./services/admin-service
+      dockerfile: Dockerfile
     container_name: pool-game-admin-service
     ports:
       - "${ADMIN_SERVICE_PORT:-3070}:3000"
@@ -390,8 +390,8 @@ services:
   # Agent Service
   agent-service:
     build:
-      context: .
-      dockerfile: ./services/agent-service/Dockerfile
+      context: ./services/agent-service
+      dockerfile: Dockerfile
     container_name: pool-game-agent-service
     ports:
       - "${AGENT_SERVICE_PORT:-3010}:3000"
@@ -417,8 +417,8 @@ services:
   # Notification Service
   notification-service:
     build:
-      context: .
-      dockerfile: ./services/notification-service/Dockerfile
+      context: ./services/notification-service
+      dockerfile: Dockerfile
     container_name: pool-game-notification-service
     ports:
       - "${NOTIFICATION_SERVICE_PORT:-3008}:3000"
@@ -461,8 +461,8 @@ services:
   # Revenue Analytics Service
   revenue-analytics-service:
     build:
-      context: .
-      dockerfile: ./services/revenue-analytics-service/Dockerfile
+      context: ./services/revenue-analytics-service
+      dockerfile: Dockerfile
     container_name: pool-game-revenue-analytics-service
     ports:
       - "${REVENUE_ANALYTICS_SERVICE_PORT:-3012}:3000"
