@@ -1,14 +1,20 @@
 FROM node:20-alpine
 
+RUN apk add --no-cache openssl1.1-compat
+
 WORKDIR /app
 
-COPY package*.json ./
-
+COPY services/tournament-service/package*.json ./
 RUN npm install --omit=dev
 
-COPY . .
+COPY shared/package*.json /shared/
+RUN npm install --omit=dev --prefix /shared
+
+COPY services/tournament-service/ ./
+COPY shared /shared
 
 RUN npx prisma generate
+
 EXPOSE 3000
 
 CMD ["npm", "start"]

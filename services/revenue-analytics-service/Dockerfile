@@ -1,20 +1,21 @@
 FROM node:18-alpine
 
+RUN apk add --no-cache openssl1.1-compat
+
 WORKDIR /app
 
-# Install dependencies
-COPY package*.json ./
+COPY services/revenue-analytics-service/package*.json ./
 RUN npm install --omit=dev
 
-# Copy source code
-COPY . .
+COPY shared/package*.json /shared/
+RUN npm install --omit=dev --prefix /shared
+
+COPY services/revenue-analytics-service/ ./
+COPY shared /shared
 
 RUN npx prisma generate
-# Create logs directory
 RUN mkdir -p logs
 
-# Expose port
-EXPOSE 3008
+EXPOSE 3000
 
-# Start the application
 CMD ["npm", "start"]
