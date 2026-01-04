@@ -93,6 +93,96 @@ const setupSocketIO = (io) => {
       io.to(`user:${data.userId}`).emit('notification:new', data.notification);
     });
 
+    socket.on('broadcast:player:stats', (data) => {
+      if (!data || !data.userId || !data.stats) return;
+      io.to(`user:${data.userId}`).emit('player:stats', data.stats);
+    });
+
+    socket.on('player:stats:request', async (data) => {
+      try {
+        const requestedPlayerId = data?.playerId;
+        if (requestedPlayerId && requestedPlayerId !== socket.userId) {
+          socket.emit('player:stats:error', { message: 'Forbidden' });
+          return;
+        }
+
+        const playerId = requestedPlayerId || socket.userId;
+        const target = process.env.PLAYER_SERVICE_URL || 'http://localhost:3005';
+        const response = await fetch(`${target}/player/${playerId}/stats`, {
+          headers: {
+            Authorization: `Bearer ${socket.authToken}`
+          }
+        });
+
+        if (!response.ok) {
+          const message = `Failed to fetch player stats (${response.status})`;
+          socket.emit('player:stats:error', { message });
+          return;
+        }
+
+        const payload = await response.json();
+        const stats = payload?.data || payload;
+        socket.emit('player:stats', stats);
+      } catch (error) {
+        logger.error('Failed to handle player:stats:request:', error);
+        socket.emit('player:stats:error', { message: 'Failed to fetch player stats' });
+      }
+    });
+
+    socket.on('player:tournaments:request', async () => {
+      try {
+        const target = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3004';
+        const response = await fetch(`${target}/tournament?limit=50&offset=0`, {
+          headers: {
+            Authorization: `Bearer ${socket.authToken}`
+          }
+        });
+
+        if (!response.ok) {
+          const message = `Failed to fetch tournaments (${response.status})`;
+          socket.emit('player:tournaments:error', { message });
+          return;
+        }
+
+        const payload = await response.json();
+        const tournaments = payload?.data || payload;
+        socket.emit('player:tournaments:update', tournaments);
+      } catch (error) {
+        logger.error('Failed to handle player:tournaments:request:', error);
+        socket.emit('player:tournaments:error', { message: 'Failed to fetch tournaments' });
+      }
+    });
+
+    socket.on('player:seasons:request', async (data) => {
+      try {
+        const tournamentId = data?.tournamentId;
+        if (!tournamentId) {
+          socket.emit('player:seasons:error', { message: 'Tournament ID is required' });
+          return;
+        }
+
+        const target = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3004';
+        const response = await fetch(`${target}/tournament/${tournamentId}/seasons?limit=50&offset=0`, {
+          headers: {
+            Authorization: `Bearer ${socket.authToken}`
+          }
+        });
+
+        if (!response.ok) {
+          const message = `Failed to fetch seasons (${response.status})`;
+          socket.emit('player:seasons:error', { message, tournamentId });
+          return;
+        }
+
+        const payload = await response.json();
+        const seasons = payload?.data || payload;
+        socket.emit('player:seasons:update', { tournamentId, seasons });
+      } catch (error) {
+        logger.error('Failed to handle player:seasons:request:', error);
+        socket.emit('player:seasons:error', { message: 'Failed to fetch seasons', tournamentId: data?.tournamentId });
+      }
+    });
+
     socket.on('admin:dashboard:request', async () => {
       try {
         const target = process.env.ADMIN_SERVICE_URL || 'http://localhost:3009';
