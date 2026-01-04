@@ -10,6 +10,9 @@ const logger = require('./utils/logger');
 const app = express();
 const PORT = process.env.PORT || 3008;
 
+// Trust proxy headers from the gateway/load balancer.
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 app.use(cors({

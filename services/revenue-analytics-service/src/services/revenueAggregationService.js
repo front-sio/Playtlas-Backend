@@ -301,7 +301,7 @@ class RevenueAggregationService {
       const revenues = await prisma.agentRevenue.findMany({
         where,
         orderBy: [
-          { totalRevenue: 'desc' },
+          { playerRevenue: 'desc' },
           { date: 'desc' }
         ],
         take: agentId ? undefined : 100
