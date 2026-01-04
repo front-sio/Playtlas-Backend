@@ -82,6 +82,55 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', service: 'api-gateway', env: NODE_ENV, timestamp: new Date().toISOString() });
 });
 
+// Batch lookup for match metadata
+app.post('/api/lookup/matches', express.json(), async (req, res) => {
+  try {
+    const { opponentIds = [], tournamentIds = [] } = req.body || {};
+    const uniqueOpponents = Array.from(new Set(opponentIds.filter(Boolean)));
+    const uniqueTournaments = Array.from(new Set(tournamentIds.filter(Boolean)));
+
+    const playerServiceUrl = process.env.PLAYER_SERVICE_URL || 'http://localhost:3005';
+    const tournamentServiceUrl = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3004';
+
+    const opponents = {};
+    const tournaments = {};
+
+    await Promise.all([
+      Promise.all(
+        uniqueOpponents.map(async (opponentId) => {
+          try {
+            const response = await fetch(`${playerServiceUrl}/player/${opponentId}/stats`);
+            if (!response.ok) return;
+            const payload = await response.json();
+            const username = payload?.data?.username;
+            if (username) opponents[opponentId] = username;
+          } catch (error) {
+            logger.error({ error, opponentId }, '[lookup/matches] Failed to resolve opponent');
+          }
+        })
+      ),
+      Promise.all(
+        uniqueTournaments.map(async (tournamentId) => {
+          try {
+            const response = await fetch(`${tournamentServiceUrl}/tournament/${tournamentId}`);
+            if (!response.ok) return;
+            const payload = await response.json();
+            const name = payload?.data?.name;
+            if (name) tournaments[tournamentId] = name;
+          } catch (error) {
+            logger.error({ error, tournamentId }, '[lookup/matches] Failed to resolve tournament');
+          }
+        })
+      )
+    ]);
+
+    res.json({ success: true, data: { opponents, tournaments } });
+  } catch (error) {
+    logger.error({ error }, '[lookup/matches] Failed to resolve match lookups');
+    res.status(500).json({ success: false, error: 'Failed to resolve match lookups' });
+  }
+});
+
 // Setup Socket.IO
 setupSocketIO(io);
 
