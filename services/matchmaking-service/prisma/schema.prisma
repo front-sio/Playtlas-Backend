@@ -42,3 +42,19 @@ model Player {
 
   @@map("players")
 }
+
+model MatchQueue {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  playerId      String   @unique @db.Uuid
+  tournamentId  String?  @db.Uuid
+  seasonId      String?  @db.Uuid
+  round         Int?
+  playerRating  Int      @default(1000)
+  status        String   @default("waiting")
+  matchedAt     DateTime?
+  joinedAt      DateTime @default(now())
+
+  @@index([status])
+  @@index([tournamentId, seasonId, round])
+  @@map("match_queue")
+}

@@ -2,6 +2,10 @@ const MATCH_READY_TIMEOUT = 120; // 2 minutes
 const QUEUE_TIMEOUT = 300; // 5 minutes
 
 exports.startMatchScheduler = function(io, prisma) {
+  if (!prisma?.matchQueue || !prisma?.match) {
+    console.warn('⚠️ Match queue scheduler disabled: required Prisma models are missing');
+    return;
+  }
   // Check for players in queue and create matches
   setInterval(async () => {
     await processMatchQueue(io, prisma);
@@ -12,7 +16,7 @@ exports.startMatchScheduler = function(io, prisma) {
     try {
       const timeout = new Date(Date.now() - (MATCH_READY_TIMEOUT * 1000));
       
-      const timedOutMatches = await prisma.matches.findMany({
+      const timedOutMatches = await prisma.match.findMany({
         where: {
           status: 'ready',
           scheduledTime: {
@@ -25,7 +29,7 @@ exports.startMatchScheduler = function(io, prisma) {
         // Check if both players are ready
         if (!match.player1Ready || !match.player2Ready) {
           // Cancel match - player(s) didn't ready up
-          await prisma.matches.update({
+          await prisma.match.update({
             where: { id: match.id },
             data: {
               status: 'cancelled',
