@@ -3,7 +3,6 @@ const logger = require('../utils/logger');
 const ActivityLogger = require('../utils/activityLogger');
 const { asyncHandler } = require('../middlewares/errorHandler');
 const axios = require('axios');
-const { sendTournamentCommand } = require('../kafka/tournamentCommandClient');
 const { emitDashboardStats, emitUserStats, emitPaymentStats } = require('../utils/socketEmitter');
 
 // Create separate Prisma client for game service database
@@ -21,6 +20,7 @@ const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3
 const GAME_SERVICE_URL = process.env.GAME_SERVICE_URL || 'http://localhost:3003';
 const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003';
 const AGENT_SERVICE_URL = process.env.AGENT_SERVICE_URL || 'http://localhost:3010';
+const TOURNAMENT_SERVICE_URL = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3000';
 
 const getAuthHeaders = (req) => {
   const authHeader = req.headers.authorization;
@@ -361,15 +361,14 @@ exports.generateFinancialReport = asyncHandler(async (req, res) => {
 // Tournament Management
 exports.getTournamentStats = asyncHandler(async (req, res) => {
   try {
-    const result = await sendTournamentCommand({
-      action: 'STATS',
-      data: {},
-      actor: { userId: req.adminId, role: req.userRole }
+    const response = await axios.get(`${TOURNAMENT_SERVICE_URL}/tournament/stats`, {
+      headers: getAuthHeaders(req)
     });
+    const result = response.data?.data || {};
 
     await ActivityLogger.log(req.adminId, 'view_tournament_stats', 'tournaments');
 
-    res.json({ success: true, data: result.data });
+    res.json({ success: true, data: result });
   } catch (error) {
     res.status(502).json({ success: false, error: error.message || 'Tournament service error' });
   }
@@ -379,15 +378,16 @@ exports.cancelTournament = asyncHandler(async (req, res) => {
   const { tournamentId } = req.params;
   const { reason } = req.body;
 
-  const result = await sendTournamentCommand({
-    action: 'CANCEL',
-    data: { tournamentId, reason },
-    actor: { userId: req.adminId, role: req.userRole }
-  });
+  const response = await axios.post(
+    `${TOURNAMENT_SERVICE_URL}/tournament/${tournamentId}/cancel`,
+    { reason },
+    { headers: getAuthHeaders(req) }
+  );
+  const result = response.data?.data;
 
-  if (result?.data) {
+  if (result) {
     try {
-      await syncTournamentReadModel(result.data);
+      await syncTournamentReadModel(result);
     } catch (err) {
       logger.error({ err }, 'Failed to sync tournament read model after cancel');
     }
@@ -401,7 +401,7 @@ exports.cancelTournament = asyncHandler(async (req, res) => {
   );
 
   logger.info(`Tournament cancelled: ${tournamentId}`);
-  res.json({ success: true, data: result.data });
+  res.json({ success: true, data: result });
 });
 
 // Dashboard Statistics
@@ -410,11 +410,7 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     const [authStats, walletStats, tournamentStats, paymentStats, systemWallet, activeSessions, agentUsers] = await Promise.all([
       axios.get(`${AUTH_SERVICE_URL}/stats`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
       axios.get(`${WALLET_SERVICE_URL}/stats`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
-      sendTournamentCommand({
-        action: 'STATS',
-        data: {},
-        actor: { userId: req.adminId, role: req.userRole }
-      }).catch(() => ({ data: {} })),
+      axios.get(`${TOURNAMENT_SERVICE_URL}/tournament/stats`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
       axios.get(`${PAYMENT_SERVICE_URL}/admin/stats`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
       axios.get(`${WALLET_SERVICE_URL}/system/wallet`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
       axios.get(`${GAME_SERVICE_URL}/sessions`, {
@@ -429,7 +425,7 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
 
     const usersData = authStats.data?.data || authStats.data;
     const financialData = walletStats.data?.data || walletStats.data;
-    const tournamentData = tournamentStats.data || {};
+    const tournamentData = tournamentStats.data?.data || tournamentStats.data || {};
     const paymentData = paymentStats.data?.data || paymentStats.data || {};
     const systemWalletData = systemWallet.data?.data || systemWallet.data || {};
     const sessionsData = activeSessions.data?.data || activeSessions.data || [];
@@ -803,15 +799,16 @@ exports.createTournament = asyncHandler(async (req, res) => {
   tournamentData.createdBy = req.adminId;
 
   try {
-    const result = await sendTournamentCommand({
-      action: 'CREATE',
-      data: tournamentData,
-      actor: { userId: req.adminId, role: req.userRole }
-    });
+    const response = await axios.post(
+      `${TOURNAMENT_SERVICE_URL}/tournament`,
+      tournamentData,
+      { headers: getAuthHeaders(req) }
+    );
+    const result = response.data?.data;
 
-    if (result?.data) {
+    if (result) {
       try {
-        await syncTournamentReadModel(result.data);
+        await syncTournamentReadModel(result);
       } catch (err) {
         logger.error({ err }, 'Failed to sync tournament read model after create');
       }
@@ -821,11 +818,11 @@ exports.createTournament = asyncHandler(async (req, res) => {
       req.adminId,
       'create_tournament',
       'tournaments',
-      { resourceId: result.data?.tournamentId, name: tournamentData.name }
+      { resourceId: result?.tournamentId, name: tournamentData.name }
     );
 
-    logger.info(`Tournament created: ${result.data?.tournamentId}`);
-    res.status(201).json({ success: true, data: result.data });
+    logger.info(`Tournament created: ${result?.tournamentId}`);
+    res.status(201).json({ success: true, data: result });
   } catch (error) {
     logger.error('Failed to create tournament:', error.message);
     res.status(502).json({ 
@@ -839,14 +836,24 @@ exports.getTournaments = asyncHandler(async (req, res) => {
   const { status, limit = 50, offset = 0 } = req.query;
 
   try {
-    const result = await sendTournamentCommand({
-      action: 'LIST',
-      data: { status, limit, offset },
-      actor: { userId: req.adminId, role: req.userRole }
-    });
+    const [listResponse, statsResponse] = await Promise.all([
+      axios.get(`${TOURNAMENT_SERVICE_URL}/tournament`, {
+        headers: getAuthHeaders(req),
+        params: { status, limit, offset }
+      }),
+      axios
+        .get(`${TOURNAMENT_SERVICE_URL}/tournament/stats`, { headers: getAuthHeaders(req) })
+        .catch(() => ({ data: { data: {} } }))
+    ]);
+    const items = listResponse.data?.data || [];
+    const stats = statsResponse.data?.data || {};
+    const statusCounts = stats.statusCounts || {};
+    const total = status && status !== 'all'
+      ? Number(statusCounts[status] || 0)
+      : Number(stats.totalTournaments || 0);
 
     await ActivityLogger.log(req.adminId, 'view_tournaments', 'tournaments');
-    res.json({ success: true, data: result.data });
+    res.json({ success: true, data: { items, total } });
   } catch (error) {
     logger.error('Failed to get tournaments:', error.message);
     res.status(502).json({ 
@@ -861,15 +868,16 @@ exports.updateTournament = asyncHandler(async (req, res) => {
   const updateData = req.body;
 
   try {
-    const result = await sendTournamentCommand({
-      action: 'UPDATE',
-      data: { tournamentId, ...updateData, updatedBy: req.adminId },
-      actor: { userId: req.adminId, role: req.userRole }
-    });
+    const response = await axios.put(
+      `${TOURNAMENT_SERVICE_URL}/tournament/${tournamentId}`,
+      { ...updateData, updatedBy: req.adminId },
+      { headers: getAuthHeaders(req) }
+    );
+    const result = response.data?.data;
 
-    if (result?.data) {
+    if (result) {
       try {
-        await syncTournamentReadModel(result.data);
+        await syncTournamentReadModel(result);
       } catch (err) {
         logger.error({ err }, 'Failed to sync tournament read model after update');
       }
@@ -883,7 +891,7 @@ exports.updateTournament = asyncHandler(async (req, res) => {
     );
 
     logger.info(`Tournament updated: ${tournamentId}`);
-    res.json({ success: true, data: result.data });
+    res.json({ success: true, data: result });
   } catch (error) {
     res.status(502).json({ 
       success: false, 
@@ -896,10 +904,8 @@ exports.deleteTournament = asyncHandler(async (req, res) => {
   const { tournamentId } = req.params;
 
   try {
-    await sendTournamentCommand({
-      action: 'DELETE',
-      data: { tournamentId },
-      actor: { userId: req.adminId, role: req.userRole }
+    await axios.delete(`${TOURNAMENT_SERVICE_URL}/tournament/${tournamentId}`, {
+      headers: getAuthHeaders(req)
     });
 
     try {
@@ -929,15 +935,16 @@ exports.startTournament = asyncHandler(async (req, res) => {
   const { tournamentId } = req.params;
 
   try {
-    const result = await sendTournamentCommand({
-      action: 'START',
-      data: { tournamentId, startedBy: req.adminId },
-      actor: { userId: req.adminId, role: req.userRole }
-    });
+    const response = await axios.post(
+      `${TOURNAMENT_SERVICE_URL}/tournament/${tournamentId}/start`,
+      { startedBy: req.adminId },
+      { headers: getAuthHeaders(req) }
+    );
+    const result = response.data?.data?.tournament || response.data?.data;
 
-    if (result?.data) {
+    if (result) {
       try {
-        await syncTournamentReadModel(result.data);
+        await syncTournamentReadModel(result);
       } catch (err) {
         logger.error({ err }, 'Failed to sync tournament read model after start');
       }
@@ -951,7 +958,7 @@ exports.startTournament = asyncHandler(async (req, res) => {
     );
 
     logger.info(`Tournament started: ${tournamentId}`);
-    res.json({ success: true, data: result.data });
+    res.json({ success: true, data: result });
   } catch (error) {
     res.status(502).json({ 
       success: false, 
