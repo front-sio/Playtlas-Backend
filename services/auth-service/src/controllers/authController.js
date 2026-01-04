@@ -78,15 +78,17 @@ exports.createUser = async (req, res) => {
     }
 
     if ((newUser.role || '').toLowerCase() === 'agent') {
-      try {
-        await axios.post(`${WALLET_SERVICE_URL}/create`, {
-          userId: newUser.userId,
-          type: 'agent',
-          currency: 'TZS'
-        });
-      } catch (walletErr) {
-        logger.error({ err: walletErr, userId: newUser.userId }, 'Failed to auto-create agent wallet');
-      }
+      publishEvent(Topics.AGENT_REGISTERED, {
+        userId: newUser.userId,
+        username,
+        email,
+        phoneNumber: normalizedPhoneNumber,
+        firstName,
+        lastName,
+        gender
+      }).catch((eventError) => {
+        logger.error('Failed to publish AGENT_REGISTERED event (non-blocking):', eventError);
+      });
     }
 
     delete newUser.password;
@@ -155,17 +157,32 @@ exports.register = async (req, res) => {
 
     // Publish event for wallet and player profile creation
     // Non-blocking: registration succeeds even if Kafka is unavailable
-    publishEvent(Topics.PLAYER_REGISTERED, {
-      userId: newUser.userId,
-      username,
-      email,
-      phoneNumber: normalizedPhoneNumber,
-      firstName,
-      lastName,
-      gender
-    }).catch((eventError) => {
-      logger.error('Failed to publish PLAYER_REGISTERED event (non-blocking):', eventError);
-    });
+    const role = (newUser.role || 'player').toLowerCase();
+    if (role === 'agent') {
+      publishEvent(Topics.AGENT_REGISTERED, {
+        userId: newUser.userId,
+        username,
+        email,
+        phoneNumber: normalizedPhoneNumber,
+        firstName,
+        lastName,
+        gender
+      }).catch((eventError) => {
+        logger.error('Failed to publish AGENT_REGISTERED event (non-blocking):', eventError);
+      });
+    } else {
+      publishEvent(Topics.PLAYER_REGISTERED, {
+        userId: newUser.userId,
+        username,
+        email,
+        phoneNumber: normalizedPhoneNumber,
+        firstName,
+        lastName,
+        gender
+      }).catch((eventError) => {
+        logger.error('Failed to publish PLAYER_REGISTERED event (non-blocking):', eventError);
+      });
+    }
 
     const tokens = generateTokens(newUser.userId, newUser.role);
     await prisma.refreshToken.create({

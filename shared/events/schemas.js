@@ -14,6 +14,13 @@ function validatePlayerRegistered(payload) {
   return { ok: true, value: payload };
 }
 
+function validateAgentRegistered(payload) {
+  if (!payload || !isString(payload.userId)) return { ok: false, error: 'userId is required' };
+  if (!isString(payload.username)) return { ok: false, error: 'username is required' };
+  if (!isString(payload.email)) return { ok: false, error: 'email is required' };
+  if (!isString(payload.phoneNumber)) return { ok: false, error: 'phoneNumber is required' };
+  return { ok: true, value: payload };
+}
 function validateWalletCreated(payload) {
   if (!payload || !isString(payload.walletId)) return { ok: false, error: 'walletId is required' };
   if (!isString(payload.ownerId)) return { ok: false, error: 'ownerId is required' };
@@ -119,6 +126,7 @@ function validateTournamentLifecycle(payload) {
 
 const validatorsByTopic = {
   'auth.player_registered': validatePlayerRegistered,
+  'auth.agent_registered': validateAgentRegistered,
   'wallet.wallet_created': validateWalletCreated,
   'tournament.player_joined_season': validatePlayerJoinedSeason,
   'tournament.season_completed': validateSeasonCompleted,

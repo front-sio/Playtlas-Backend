@@ -9,6 +9,7 @@ const { validateEventPayload } = require('./schemas');
 // NOTE: These are the canonical topic names for inter-service contracts.
 const Topics = {
   PLAYER_REGISTERED: 'auth.player_registered',
+  AGENT_REGISTERED: 'auth.agent_registered',
   WALLET_CREATED: 'wallet.wallet_created',
   PLAYER_JOINED_SEASON: 'tournament.player_joined_season',
   SEASON_FEE_DEBITED: 'wallet.season_fee_debited',

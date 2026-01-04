@@ -2,6 +2,7 @@
 
 const KafkaTopics = {
   PLAYER_REGISTERED: 'auth.player_registered',
+  AGENT_REGISTERED: 'auth.agent_registered',
 
   WALLET_SEASON_FEE_PAID: 'wallet.season_fee_paid',
   WALLET_UPDATED: 'wallet.wallet_updated',

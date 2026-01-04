@@ -2,6 +2,19 @@ const { prisma } = require('../config/db');
 const { subscribeEvents, Topics, publishEvent } = require('../../../../shared/events');
 const logger = require('../utils/logger');
 
+function logProcessingResult(topic, startTime, err) {
+  const durationMs = Date.now() - startTime;
+  if (err) {
+    logger.error({ topic, durationMs, err }, '[walletConsumers] Event processing failed');
+    return;
+  }
+  if (durationMs > 2000) {
+    logger.warn({ topic, durationMs }, '[walletConsumers] Slow event processing');
+  } else {
+    logger.info({ topic, durationMs }, '[walletConsumers] Event processed');
+  }
+}
+
 async function handleDepositApproved(_topic, payload) {
   const { depositId, walletId, userId, amount, referenceNumber, description } = payload;
   
@@ -127,6 +140,51 @@ async function handlePlayerRegistered(_topic, payload) {
   }
 }
 
+async function handleAgentRegistered(_topic, payload) {
+  const { userId } = payload;
+  if (!userId) {
+    logger.warn({ payload }, '[walletConsumers] AGENT_REGISTERED missing userId');
+    return;
+  }
+
+  try {
+    const existing = await prisma.wallet.findFirst({
+      where: {
+        ownerId: userId,
+        type: 'agent'
+      }
+    });
+
+    let wallet = existing;
+    if (!wallet) {
+      wallet = await prisma.wallet.create({
+        data: {
+          ownerId: userId,
+          type: 'agent',
+          currency: 'TZS',
+          balance: 0
+        }
+      });
+      logger.info({ walletId: wallet.walletId, userId }, '[walletConsumers] Wallet created for agent');
+    } else {
+      logger.info({ walletId: wallet.walletId, userId }, '[walletConsumers] Wallet already exists for agent');
+    }
+
+    try {
+      await publishEvent(Topics.WALLET_CREATED, {
+        walletId: wallet.walletId,
+        ownerId: wallet.ownerId,
+        type: wallet.type,
+        currency: wallet.currency
+      });
+    } catch (eventErr) {
+      logger.error({ err: eventErr, userId }, '[walletConsumers] Failed to publish WALLET_CREATED event');
+    }
+  } catch (err) {
+    logger.error({ err, userId }, '[walletConsumers] Failed to create wallet for agent');
+  }
+}
+
 // Handle tournament.match_completed events. When a final winner is indicated,
 // credit the wallet directly.
 async function handleTournamentMatchCompleted(_topic, payload) {
@@ -207,6 +265,7 @@ async function handleTournamentMatchCompleted(_topic, payload) {
 async function startWalletConsumers() {
   const topics = [
     Topics.PLAYER_REGISTERED,
+    Topics.AGENT_REGISTERED,
     Topics.MATCH_COMPLETED,
     Topics.DEPOSIT_APPROVED,
     Topics.WITHDRAWAL_APPROVED
@@ -218,17 +277,26 @@ async function startWalletConsumers() {
   while (true) {
     try {
       await subscribeEvents('wallet-service', topics, async (topic, payload) => {
-        if (topic === Topics.PLAYER_REGISTERED) {
-          await handlePlayerRegistered(topic, payload);
-        }
-        if (topic === Topics.MATCH_COMPLETED) {
-          await handleTournamentMatchCompleted(topic, payload);
-        }
-        if (topic === Topics.DEPOSIT_APPROVED) {
-          await handleDepositApproved(topic, payload);
-        }
-        if (topic === Topics.WITHDRAWAL_APPROVED) {
-          await handleWithdrawalApproved(topic, payload);
+        const startTime = Date.now();
+        try {
+          if (topic === Topics.PLAYER_REGISTERED) {
+            await handlePlayerRegistered(topic, payload);
+          }
+          if (topic === Topics.AGENT_REGISTERED) {
+            await handleAgentRegistered(topic, payload);
+          }
+          if (topic === Topics.MATCH_COMPLETED) {
+            await handleTournamentMatchCompleted(topic, payload);
+          }
+          if (topic === Topics.DEPOSIT_APPROVED) {
+            await handleDepositApproved(topic, payload);
+          }
+          if (topic === Topics.WITHDRAWAL_APPROVED) {
+            await handleWithdrawalApproved(topic, payload);
+          }
+          logProcessingResult(topic, startTime);
+        } catch (err) {
+          logProcessingResult(topic, startTime, err);
         }
       });
       return;

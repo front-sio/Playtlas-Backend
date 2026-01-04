@@ -6,6 +6,19 @@ const { subscribeEvents, Topics } = require('../../../../shared/events');
 const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3007';
 const AGENT_PAYOUT_RATE = Number(process.env.AGENT_PAYOUT_PER_PLAYER || 200);
 
+function logProcessingResult(topic, startTime, err) {
+  const durationMs = Date.now() - startTime;
+  if (err) {
+    logger.error({ topic, durationMs, err }, '[agent-consumers] Event processing failed');
+    return;
+  }
+  if (durationMs > 2000) {
+    logger.warn({ topic, durationMs }, '[agent-consumers] Slow event processing');
+  } else {
+    logger.info({ topic, durationMs }, '[agent-consumers] Event processed');
+  }
+}
+
 async function ensureAgentWallet(ownerId) {
   try {
     const walletResponse = await axios.get(`${WALLET_SERVICE_URL}/owner/${ownerId}`, {
@@ -24,6 +37,22 @@ async function ensureAgentWallet(ownerId) {
     currency: 'TZS'
   });
   return created.data?.data;
+}
+
+async function ensureAgentProfile(userId) {
+  return prisma.agentProfile.upsert({
+    where: { userId },
+    update: { userId },
+    create: { userId }
+  });
+}
+
+async function handleAgentRegistered(payload) {
+  const { userId } = payload || {};
+  if (!userId) return;
+
+  await ensureAgentProfile(userId);
+  await ensureAgentWallet(userId);
 }
 
 async function handlePlayerJoinedSeason(payload) {
@@ -94,18 +123,40 @@ async function handleSeasonCompleted(payload) {
 }
 
 async function startAgentConsumers() {
-  await subscribeEvents(
-    'agent-service',
-    [Topics.PLAYER_JOINED_SEASON, Topics.SEASON_COMPLETED],
-    async (topic, payload) => {
-      if (topic === Topics.PLAYER_JOINED_SEASON) {
-        await handlePlayerJoinedSeason(payload);
-      }
-      if (topic === Topics.SEASON_COMPLETED) {
-        await handleSeasonCompleted(payload);
-      }
+  let attempt = 0;
+  // Keep retrying so payouts/registrations resume if Kafka starts late.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      await subscribeEvents(
+        'agent-service',
+        [Topics.AGENT_REGISTERED, Topics.PLAYER_JOINED_SEASON, Topics.SEASON_COMPLETED],
+        async (topic, payload) => {
+          const startTime = Date.now();
+          try {
+            if (topic === Topics.AGENT_REGISTERED) {
+              await handleAgentRegistered(payload);
+            }
+            if (topic === Topics.PLAYER_JOINED_SEASON) {
+              await handlePlayerJoinedSeason(payload);
+            }
+            if (topic === Topics.SEASON_COMPLETED) {
+              await handleSeasonCompleted(payload);
+            }
+            logProcessingResult(topic, startTime);
+          } catch (err) {
+            logProcessingResult(topic, startTime, err);
+          }
+        }
+      );
+      return;
+    } catch (err) {
+      attempt += 1;
+      const delay = Math.min(1000 * 2 ** (attempt - 1), 10000);
+      logger.error({ err, attempt, delay }, '[agent-consumers] Failed to subscribe to Kafka, retrying');
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
-  );
+  }
 }
 
 module.exports = { startAgentConsumers };
