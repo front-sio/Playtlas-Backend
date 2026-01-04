@@ -136,7 +136,6 @@ const setupProxy = (app) => {
   app.use('/api/revenue', authMiddleware, createProxyMiddleware({
     target: process.env.REVENUE_ANALYTICS_SERVICE_URL || 'http://localhost:3008',
     changeOrigin: true,
-    pathRewrite: { '^/api/revenue': '' },
     onError: (err, req, res) => {
       logger.error('Revenue Analytics Service Proxy Error:', err);
       res.status(502).json({ error: 'Revenue analytics service unavailable' });
