@@ -490,11 +490,23 @@ exports.verifyEmail = async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
+    // Generate new tokens for the verified user
+    const tokens = generateTokens(user.userId, user.role);
+
+    // Update or create refresh token
+    await prisma.refreshToken.deleteMany({
+      where: { userId: user.userId }
+    });
+    await prisma.refreshToken.create({
+      data: { userId: user.userId, token: tokens.refreshToken }
+    });
+
     delete user.password;
     res.json({
       success: true,
       data: {
-        user,
+        user: { ...user, isVerified: true },
+        ...tokens,
         message: 'Verification successful'
       }
     });
