@@ -5,7 +5,22 @@ const { createWallet, creditWallet, debitWallet, transferFunds: transferFundsHel
 const { withTransaction } = require('../../../../shared/utils/drizzleHelpers');
 const { ensureSystemWallet, ensurePlatformWallet } = require('../utils/walletBootstrap');
 
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
+const AUTH_SERVICE_URL =
+  process.env.AUTH_SERVICE_URL ||
+  process.env.API_GATEWAY_URL ||
+  'http://localhost:8081/api/auth';
+
+const normalizePhoneNumber = (phoneNumber, countryCode = '+255') => {
+  if (!phoneNumber) return phoneNumber;
+  const cleaned = String(phoneNumber).replace(/\s+/g, '');
+  if (cleaned.startsWith('0')) {
+    return `${countryCode}${cleaned.substring(1)}`;
+  }
+  if (!cleaned.startsWith('+')) {
+    return `${countryCode}${cleaned}`;
+  }
+  return cleaned;
+};
 
 const ADMIN_ROLES = new Set([
   'admin',
@@ -324,8 +339,9 @@ exports.transferFunds = async (req, res) => {
 };
 
 async function fetchUserByPhone(phoneNumber, authHeader) {
+  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
   const response = await axios.get(
-    `${AUTH_SERVICE_URL}/users/lookup/phone/${encodeURIComponent(phoneNumber)}`,
+    `${AUTH_SERVICE_URL}/users/lookup/phone/${encodeURIComponent(normalizedPhoneNumber)}`,
     {
       headers: authHeader ? { Authorization: authHeader } : undefined,
       timeout: 10000
@@ -363,7 +379,10 @@ exports.lookupRecipientByPhone = async (req, res) => {
     });
   } catch (error) {
     logger.error('Lookup recipient by phone error:', error);
-    res.status(500).json({ success: false, error: 'Failed to lookup recipient' });
+    const status = error?.response?.status;
+    const message =
+      status === 404 ? 'Recipient not found' : 'Failed to lookup recipient';
+    res.status(status || 500).json({ success: false, error: message });
   }
 };
 

@@ -4,7 +4,7 @@ const axios = require('axios');
 const { publishEvent, Topics } = require('../../../../shared');
 const { ensureTournamentSchedule, scheduleTournamentStart, cancelTournamentSchedule } = require('../jobs/schedulerQueue');
 
-const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3002';
+const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://payment-service:3000';
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 4);
 const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 30);
 const DEFAULT_SEASON_DURATION = 20 * 60;
@@ -342,13 +342,20 @@ exports.joinSeason = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Already joined this season' });
     }
 
-    // Pay season entry fee via wallet service
+    // Pay season entry fee via payment service (creates transaction record)
     try {
-      await axios.post(`${WALLET_SERVICE_URL}/pay-tournament-fee`, {
+      await axios.post(`${PAYMENT_SERVICE_URL}/tournament-fee`, {
         playerWalletId,
         amount: tournament.entryFee,
         tournamentId: tournament.tournamentId,
-        seasonId: season.seasonId
+        seasonId: season.seasonId,
+        userId: playerId
+      }, {
+        headers: {
+          'Authorization': req.headers.authorization,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
       });
     } catch (error) {
       logger.error('Season fee payment failed:', error);

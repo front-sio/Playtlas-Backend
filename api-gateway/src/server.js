@@ -1,4 +1,4 @@
-// 
+// backend/api-gateway/src/server.js
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');

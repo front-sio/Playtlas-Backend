@@ -364,6 +364,7 @@ exports.getTransactionHistory = async (req, res) => {
     const { type, limit = 50, offset = 0 } = req.query;
 
     let transactions = [];
+    const hasModel = (model) => model && typeof model.findMany === 'function';
 
     if (type === 'deposit' || type === 'deposits') {
       transactions = await prisma.deposit.findMany({
@@ -400,6 +401,77 @@ exports.getTransactionHistory = async (req, res) => {
         }
       });
       transactions = transactions.map(t => ({ ...t, type: 'withdrawal', id: t.withdrawalId }));
+    } else if (type === 'tournament_fee' || type === 'tournament_fees') {
+      if (!hasModel(prisma.tournamentFee)) {
+        logger.warn('Tournament fee model not available in payment-service prisma');
+        return res.json([]);
+      }
+      transactions = await prisma.tournamentFee.findMany({
+        where: { userId: userId },
+        orderBy: { createdAt: 'desc' },
+        take: parseInt(limit),
+        skip: parseInt(offset),
+        select: {
+          feeId: true,
+          referenceNumber: true,
+          amount: true,
+          fee: true,
+          tournamentId: true,
+          seasonId: true,
+          status: true,
+          createdAt: true,
+          processedAt: true,
+        }
+      });
+      transactions = transactions.map(t => ({ ...t, type: 'tournament_fee', id: t.feeId }));
+    } else if (type === 'transfer' || type === 'transfers') {
+      if (!hasModel(prisma.walletTransfer)) {
+        logger.warn('Wallet transfer model not available in payment-service prisma');
+        return res.json([]);
+      }
+      const sentTransfers = await prisma.walletTransfer.findMany({
+        where: { fromUserId: userId },
+        orderBy: { createdAt: 'desc' },
+        take: parseInt(limit),
+        skip: parseInt(offset),
+        select: {
+          transferId: true,
+          fromUserId: true,
+          toUserId: true,
+          amount: true,
+          fee: true,
+          description: true,
+          referenceNumber: true,
+          status: true,
+          createdAt: true,
+          processedAt: true,
+          metadata: true,
+        }
+      });
+      const receivedTransfers = await prisma.walletTransfer.findMany({
+        where: { toUserId: userId },
+        orderBy: { createdAt: 'desc' },
+        take: parseInt(limit),
+        skip: parseInt(offset),
+        select: {
+          transferId: true,
+          fromUserId: true,
+          toUserId: true,
+          amount: true,
+          fee: true,
+          description: true,
+          referenceNumber: true,
+          status: true,
+          createdAt: true,
+          processedAt: true,
+          metadata: true,
+        }
+      });
+      transactions = [
+        ...sentTransfers.map(t => ({ ...t, type: 'transfer_sent', id: t.transferId, direction: 'sent' })),
+        ...receivedTransfers.map(t => ({ ...t, type: 'transfer_received', id: t.transferId, direction: 'received' }))
+      ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
     } else {
       const deposits = await prisma.deposit.findMany({
         where: { userId: userId },
@@ -426,10 +498,72 @@ exports.getTransactionHistory = async (req, res) => {
           updatedAt: true,
         }
       });
+      const tournamentFees = hasModel(prisma.tournamentFee)
+        ? await prisma.tournamentFee.findMany({
+            where: { userId: userId },
+            select: {
+              feeId: true,
+              referenceNumber: true,
+              amount: true,
+              fee: true,
+              tournamentId: true,
+              seasonId: true,
+              status: true,
+              createdAt: true,
+              processedAt: true,
+            }
+          })
+        : [];
+      if (!hasModel(prisma.tournamentFee)) {
+        logger.warn('Tournament fee model not available in payment-service prisma');
+      }
+
+      const sentTransfers = hasModel(prisma.walletTransfer)
+        ? await prisma.walletTransfer.findMany({
+            where: { fromUserId: userId },
+            select: {
+              transferId: true,
+              fromUserId: true,
+              toUserId: true,
+              amount: true,
+              fee: true,
+              description: true,
+              referenceNumber: true,
+              status: true,
+              createdAt: true,
+              processedAt: true,
+              metadata: true,
+            }
+          })
+        : [];
+      const receivedTransfers = hasModel(prisma.walletTransfer)
+        ? await prisma.walletTransfer.findMany({
+            where: { toUserId: userId },
+            select: {
+              transferId: true,
+              fromUserId: true,
+              toUserId: true,
+              amount: true,
+              fee: true,
+              description: true,
+              referenceNumber: true,
+              status: true,
+              createdAt: true,
+              processedAt: true,
+              metadata: true,
+            }
+          })
+        : [];
+      if (!hasModel(prisma.walletTransfer)) {
+        logger.warn('Wallet transfer model not available in payment-service prisma');
+      }
 
       transactions = [
         ...deposits.map(t => ({ ...t, type: 'deposit', id: t.depositId, fee: null })),
-        ...withdrawals.map(t => ({ ...t, type: 'withdrawal', id: t.withdrawalId }))
+        ...withdrawals.map(t => ({ ...t, type: 'withdrawal', id: t.withdrawalId })),
+        ...tournamentFees.map(t => ({ ...t, type: 'tournament_fee', id: t.feeId })),
+        ...sentTransfers.map(t => ({ ...t, type: 'transfer_sent', id: t.transferId, direction: 'sent' })),
+        ...receivedTransfers.map(t => ({ ...t, type: 'transfer_received', id: t.transferId, direction: 'received' }))
       ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
         .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
     }

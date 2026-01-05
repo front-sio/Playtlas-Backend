@@ -8,6 +8,7 @@ const matchmakingRoutes = require('./routes/matchmaking.js');
 const { setupSocketHandlers } = require('./controllers/socketController.js');
 const { setIO } = require('./utils/socket');
 const { startMatchScheduler } = require('./utils/matchScheduler.js');
+const { startMatchTimeoutMonitor } = require('./utils/matchTimeouts.js');
 const startCleanupJob = require('./jobs/cleanup.js');
 const { initializeTournamentEventConsumer } = require('./controllers/matchCreationController');
 const { PrismaClient } = require('@prisma/client');
@@ -66,6 +67,9 @@ if (process.env.MATCH_QUEUE_ENABLED === 'true') {
 } else {
   console.log('ℹ️ Match queue scheduler disabled (set MATCH_QUEUE_ENABLED=true to enable)');
 }
+
+// Enforce match timeouts and auto-results
+startMatchTimeoutMonitor(io, prisma);
 
 // Start cleanup job
 startCleanupJob(prisma).start(); // Pass prisma to cleanupJob

@@ -8,7 +8,13 @@ const GAME_SERVICE_URL = process.env.GAME_SERVICE_URL || 'http://localhost:3006'
 
 exports.setupSocketHandlers = function(io) {
   io.on('connection', (socket) => {
-    console.log(`🔌 Player connected: ${socket.id}`);
+    console.log(`[matchmaking] connected ${socket.id}`);
+    socket.on('disconnect', (reason) => {
+      console.warn(`[matchmaking] disconnected ${socket.id} (${reason}) player=${authenticatedPlayerId || 'unknown'}`);
+    });
+    socket.on('error', (err) => {
+      console.error(`[matchmaking] socket error ${socket.id}`, err);
+    });
     
     let authenticatedPlayerId = null;
 
@@ -33,8 +39,21 @@ exports.setupSocketHandlers = function(io) {
     });
 
     // Join match room
-    socket.on('join:match', async (matchId) => {
+    socket.on('join:match', async (payload, maybeAck) => {
+      // Support both payload shapes:
+      // 1) socket.emit('join:match', matchId:string, ack:function)
+      // 2) socket.emit('join:match', {matchId:string}, ack:function)
+      const matchId = typeof payload === 'string' ? payload : payload?.matchId;
+      const ack = typeof maybeAck === 'function' ? maybeAck : (typeof payload === 'function' ? payload : null);
+      
+      // Validate matchId early
+      if (!matchId) {
+        ack?.({ ok: false, error: 'matchId required' });
+        return socket.emit('error', { message: 'matchId required' });
+      }
+
       if (!authenticatedPlayerId) {
+        ack?.({ ok: false, error: 'Not authenticated' });
         return socket.emit('error', { message: 'Not authenticated' });
       }
 
@@ -44,6 +63,7 @@ exports.setupSocketHandlers = function(io) {
         });
 
         if (!match) {
+          ack?.({ ok: false, error: 'Match not found' });
           return socket.emit('error', { message: 'Match not found' });
         }
 
@@ -51,10 +71,32 @@ exports.setupSocketHandlers = function(io) {
         const isPlayer2 = match.player2Id === authenticatedPlayerId;
 
         if (!isPlayer1 && !isPlayer2) {
+          ack?.({ ok: false, error: 'Not part of this match' });
           return socket.emit('error', { message: 'Not part of this match' });
         }
 
         socket.join(`match:${matchId}`);
+        ack?.({ ok: true, matchId });
+        socket.emit('match:joined', { matchId });
+        const readyCount = Number(match.player1Ready) + Number(match.player2Ready);
+        socket.emit('match:ready_update', {
+          matchId,
+          readyCount,
+          totalPlayers: 2
+        });
+        socket.emit('match:state', {
+          matchId,
+          status: match.status,
+          readyCount,
+          totalPlayers: 2,
+          sessionId: match.gameSessionId || null
+        });
+        if (match.gameSessionId) {
+          socket.emit('game:session_created', {
+            sessionId: match.gameSessionId,
+            matchId
+          });
+        }
         
         // Notify others in the room
         socket.to(`match:${matchId}`).emit('opponent-joined', {
@@ -62,10 +104,12 @@ exports.setupSocketHandlers = function(io) {
           playerRole: isPlayer1 ? 'p1' : 'p2'
         });
 
-        console.log(`✓ Player ${authenticatedPlayerId} joined match ${matchId}`);
+        console.log(`✓ Player ${authenticatedPlayerId} joined match ${matchId} (${socket.id})`);
       } catch (error) {
         console.error('Join match error:', error);
-        socket.emit('error', { message: 'Failed to join match' });
+        const message = error?.message || 'Failed to join match';
+        ack?.({ ok: false, error: message });
+        socket.emit('error', { message });
       }
     });
 
@@ -225,8 +269,13 @@ const { createP2PMatch } = require('./matchCreationController.js');
     });
 
     // Player ready for match
-    socket.on('match:ready', async ({ matchId }) => {
-      if (!authenticatedPlayerId) return;
+    socket.on('match:ready', async ({ matchId }, ack) => {
+      if (!authenticatedPlayerId) {
+        if (typeof ack === 'function') {
+          ack({ ok: false, error: 'Not authenticated' });
+        }
+        return;
+      }
 
       try {
         const match = await prisma.match.findUnique({
@@ -234,6 +283,9 @@ const { createP2PMatch } = require('./matchCreationController.js');
         });
 
         if (!match) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, error: 'Match not found' });
+          }
           return socket.emit('error', { message: 'Match not found' });
         }
 
@@ -241,6 +293,9 @@ const { createP2PMatch } = require('./matchCreationController.js');
         const isPlayer2 = match.player2Id === authenticatedPlayerId;
 
         if (!isPlayer1 && !isPlayer2) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, error: 'Not part of this match' });
+          }
           return socket.emit('error', { message: 'Not part of this match' });
         }
 
@@ -258,7 +313,17 @@ const { createP2PMatch } = require('./matchCreationController.js');
         const updatedMatch = await prisma.match.findUnique({
           where: { matchId }
         });
+        if (typeof ack === 'function') {
+          ack({ ok: true });
+        }
         
+        const readyCount = Number(updatedMatch.player1Ready) + Number(updatedMatch.player2Ready);
+        io.to(`match:${matchId}`).emit('match:ready_update', {
+          matchId,
+          readyCount,
+          totalPlayers: 2
+        });
+
         if (updatedMatch.player1Ready && updatedMatch.player2Ready) {
           // Start game session
           await startGameSession(io, matchId);
@@ -273,6 +338,34 @@ const { createP2PMatch } = require('./matchCreationController.js');
       } catch (error) {
         console.error('Match ready error:', error);
         socket.emit('error', { message: error.message });
+      }
+    });
+
+    socket.on('match:sync', async ({ matchId }) => {
+      if (!authenticatedPlayerId) {
+        return socket.emit('error', { message: 'Not authenticated' });
+      }
+
+      try {
+        const match = await prisma.match.findUnique({
+          where: { matchId }
+        });
+
+        if (!match) {
+          return socket.emit('error', { message: 'Match not found' });
+        }
+
+        const readyCount = Number(match.player1Ready) + Number(match.player2Ready);
+        socket.emit('match:state', {
+          matchId,
+          status: match.status,
+          readyCount,
+          totalPlayers: 2,
+          sessionId: match.gameSessionId || null
+        });
+      } catch (error) {
+        console.error('Match sync error:', error);
+        socket.emit('error', { message: 'Failed to sync match state' });
       }
     });
 
@@ -297,16 +390,16 @@ const { createP2PMatch } = require('./matchCreationController.js');
       
       if (authenticatedPlayerId) {
         connectedPlayers.delete(authenticatedPlayerId);
-        
+
         // Remove from queue if present
         try {
           if (prisma.matchQueue) {
-            await prisma.matchQueue.delete({
+            await prisma.matchQueue.deleteMany({
               where: { playerId: authenticatedPlayerId }
             });
           }
         } catch (error) {
-          console.error('Cleanup error:', error);
+          console.warn('[matchmaking] disconnect cleanup skipped', error);
         }
       }
     });
@@ -426,7 +519,9 @@ async function startGameSession(io, matchId) {
 
     console.log(`✓ Game session created: ${sessionId}`);
   } catch (error) {
-    console.error('Start game session error:', error);
+    const message = error?.response?.data?.error || error?.message || 'Failed to start game session';
+    console.error('Start game session error:', message);
+    io.to(`match:${matchId}`).emit('match:session_error', { matchId, message });
   }
 }
 

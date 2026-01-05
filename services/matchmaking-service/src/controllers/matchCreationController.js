@@ -1,13 +1,17 @@
 // services/matchmaking-service/src/controllers/matchCreationController.js
 const { prisma } = require('../config/db');
 const logger = require('../utils/logger');
-const { subscribeEvents, Topics } = require('../../../../shared/events');
+const { subscribeEvents, publishEvent, Topics } = require('../../../../shared/events');
 const { completeMatchAndProgress } = require('./matchmakingController');
 const { getIO } = require('../utils/socket');
+const axios = require('axios');
 
 const BYE_PLAYER_ID = '00000000-0000-0000-0000-000000000000';
 const GROUP_SIZE = Number(process.env.GROUP_SIZE || 4);
 const GROUP_QUALIFIERS = Number(process.env.GROUP_QUALIFIERS || 2);
+const MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
+const MAX_PARALLEL_MATCHES = Number(process.env.MATCH_MAX_PARALLEL || 5);
+const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://wallet-service:3000';
 
 function getInitialStage(playerCount) {
   if (playerCount <= 2) return 'final';
@@ -15,6 +19,123 @@ function getInitialStage(playerCount) {
   if (playerCount <= 8) return 'quarterfinal';
   if (playerCount <= 16) return 'round_of_16';
   return 'round_of_32';
+}
+
+function getBracketRounds(playerCount) {
+  if (playerCount <= 1) return 0;
+  return Math.ceil(Math.log2(playerCount));
+}
+
+function estimateSeasonEndTime(startTime, playerCount, isGroupStage) {
+  const durationMs = MATCH_DURATION_SECONDS * 1000;
+  let totalSlots = 0;
+  if (isGroupStage) {
+    const groups = Math.ceil(playerCount / GROUP_SIZE);
+    const baseGroupSize = Math.ceil(playerCount / groups);
+    const totalMatches = groups * (baseGroupSize * (baseGroupSize - 1) / 2);
+    totalSlots = Math.ceil(totalMatches / MAX_PARALLEL_MATCHES);
+  } else {
+    const rounds = getBracketRounds(playerCount);
+    const bracketSize = 2 ** rounds;
+    for (let round = 1; round <= rounds; round += 1) {
+      const matches = bracketSize / 2 ** round;
+      totalSlots += Math.ceil(matches / MAX_PARALLEL_MATCHES);
+    }
+  }
+  const endMs = startTime.getTime() + totalSlots * durationMs + 30000;
+  return new Date(endMs);
+}
+
+async function getRoundStartTime(seasonId, roundNumber, fallbackStart) {
+  if (roundNumber <= 1 && fallbackStart) {
+    return fallbackStart;
+  }
+
+  const durationMs = MATCH_DURATION_SECONDS * 1000;
+  const lastMatch = await prisma.match.findFirst({
+    where: {
+      seasonId,
+      roundNumber: { lt: roundNumber },
+      scheduledTime: { not: null }
+    },
+    orderBy: { scheduledTime: 'desc' }
+  });
+  if (lastMatch?.scheduledTime) {
+    return new Date(new Date(lastMatch.scheduledTime).getTime() + durationMs);
+  }
+  return fallbackStart || new Date(Date.now() + 60000);
+}
+
+async function refundSeasonEntryFees({ tournamentId, seasonId, playerIds }) {
+  if (!playerIds.length) return;
+
+  const tournament = await prisma.tournament.findUnique({
+    where: { tournamentId },
+    select: { entryFee: true }
+  });
+  const entryFee = Number(tournament?.entryFee || 0);
+  if (entryFee <= 0) return;
+
+  const systemWalletRes = await axios.get(`${WALLET_SERVICE_URL}/system/wallet`, { timeout: 10000 });
+  const systemWalletId = systemWalletRes.data?.data?.walletId || systemWalletRes.data?.walletId;
+  if (!systemWalletId) {
+    logger.warn('[refund] System wallet not found; skipping refunds');
+    return;
+  }
+
+  for (const playerId of playerIds) {
+    try {
+      const walletRes = await axios.get(`${WALLET_SERVICE_URL}/owner/${playerId}`, { timeout: 10000 });
+      const walletId = walletRes.data?.data?.walletId || walletRes.data?.walletId;
+      if (!walletId) continue;
+
+      await axios.post(`${WALLET_SERVICE_URL}/transfer`, {
+        fromWalletId: systemWalletId,
+        toWalletId: walletId,
+        amount: entryFee,
+        description: 'Season cancelled refund',
+        metadata: { tournamentId, seasonId },
+        idempotencyKey: `season_refund:${seasonId}:${playerId}`
+      }, { timeout: 10000 });
+
+      await publishEvent(Topics.NOTIFICATION_SEND, {
+        userId: playerId,
+        channel: 'in_app',
+        type: 'season_refund',
+        title: 'Season cancelled',
+        message: `Season ${seasonId} cancelled due to insufficient players. Your entry fee was refunded.`
+      }).catch((err) => {
+        logger.error({ err, playerId, seasonId }, '[refund] Failed to publish refund notification');
+      });
+    } catch (error) {
+      logger.error({ err: error, playerId, seasonId }, '[refund] Failed to refund entry fee');
+    }
+  }
+}
+
+async function cancelSeasonForInsufficientPlayers({ tournamentId, seasonId, playerIds }) {
+  const now = new Date();
+  await prisma.season.update({
+    where: { seasonId },
+    data: {
+      status: 'cancelled',
+      endTime: now,
+      matchesGenerated: false,
+      joiningClosed: true
+    }
+  });
+
+  await refundSeasonEntryFees({ tournamentId, seasonId, playerIds });
+
+  const io = getIO();
+  if (io) {
+    io.to(`season:${seasonId}`).emit('season:ended', {
+      tournamentId,
+      seasonId,
+      endedAt: now.toISOString(),
+      reason: 'insufficient_players'
+    });
+  }
 }
 
 /**
@@ -29,21 +150,33 @@ function getInitialStage(playerCount) {
 async function createMatches(players, options = {}) {
   logger.info('Creating matches', { players, options });
 
+  const { seasonStartTime: rawSeasonStartTime, ...matchOptions } = options;
+
   // TODO: Implement skill-based seeding for better match quality
   // For now, we shuffle players to randomize pairings
   const seededPlayers = [...players].sort(() => Math.random() - 0.5);
 
   const createdMatches = [];
+  const seasonStartTime = rawSeasonStartTime ? new Date(rawSeasonStartTime) : null;
+  const roundNumber = Number(matchOptions.roundNumber || 1);
+  const durationMs = MATCH_DURATION_SECONDS * 1000;
+  const roundStartTime = matchOptions.seasonId
+    ? await getRoundStartTime(matchOptions.seasonId, roundNumber, seasonStartTime)
+    : new Date(Date.now() + 60000);
+
   for (let i = 0; i < seededPlayers.length - 1; i += 2) {
     const player1Id = seededPlayers[i];
     const player2Id = seededPlayers[i + 1];
+    const matchIndex = Math.floor(i / 2);
+    const slotIndex = Math.floor(matchIndex / MAX_PARALLEL_MATCHES);
+    const scheduledTime = new Date(roundStartTime.getTime() + slotIndex * durationMs);
 
     const matchData = {
       player1Id,
       player2Id,
       status: 'scheduled',
-      scheduledTime: new Date(Date.now() + 60000), // 1 minute from now
-      ...options,
+      scheduledTime,
+      ...matchOptions,
     };
 
     const match = await prisma.match.create({ data: matchData });
@@ -63,7 +196,7 @@ async function createMatches(players, options = {}) {
         completedAt: new Date(),
         winnerId: byePlayer,
         metadata: { bye: true },
-        ...options
+        ...matchOptions
       }
     });
     createdMatches.push(byeMatch);
@@ -84,6 +217,13 @@ function chunkPlayers(players, size) {
 async function createGroupStageMatches(players, options = {}) {
   logger.info('Creating group stage matches', { playerCount: players.length, options });
 
+  const { seasonStartTime: rawSeasonStartTime, ...matchOptions } = options;
+  const seasonStartTime = rawSeasonStartTime ? new Date(rawSeasonStartTime) : null;
+  const durationMs = MATCH_DURATION_SECONDS * 1000;
+  const roundStartTime = matchOptions.seasonId
+    ? await getRoundStartTime(matchOptions.seasonId, 1, seasonStartTime)
+    : new Date(Date.now() + 60000);
+
   const shuffled = [...players].sort(() => Math.random() - 0.5);
   const groups = chunkPlayers(shuffled, GROUP_SIZE);
   const createdMatches = [];
@@ -102,9 +242,9 @@ async function createGroupStageMatches(players, options = {}) {
             player1Id,
             player2Id,
             status: 'scheduled',
-            scheduledTime: new Date(Date.now() + 60000),
+            scheduledTime: new Date(roundStartTime.getTime() + Math.floor(createdMatches.length / MAX_PARALLEL_MATCHES) * durationMs),
             metadata: { groupId, groupLabel },
-            ...options
+            ...matchOptions
           }
         });
         createdMatches.push(match);
@@ -118,7 +258,7 @@ async function createGroupStageMatches(players, options = {}) {
 
 async function handleTournamentMatchGeneration(data) {
   const { tournamentId, seasonId, players, stage } = data;
-  if (!tournamentId || !seasonId || !Array.isArray(players) || players.length < 2) {
+  if (!tournamentId || !seasonId || !Array.isArray(players)) {
     logger.warn({ data }, 'Invalid tournament match generation payload');
     return;
   }
@@ -126,6 +266,7 @@ async function handleTournamentMatchGeneration(data) {
   const uniquePlayers = Array.from(new Set(players.filter((p) => typeof p === 'string' && p.length > 0)));
   if (uniquePlayers.length < 2) {
     logger.warn({ tournamentId, seasonId, playerCount: uniquePlayers.length }, 'Not enough players to generate matches');
+    await cancelSeasonForInsufficientPlayers({ tournamentId, seasonId, playerIds: uniquePlayers });
     return;
   }
 
@@ -133,9 +274,25 @@ async function handleTournamentMatchGeneration(data) {
   const options = { tournamentId, seasonId, stage: normalizedStage || undefined, roundNumber: 1 };
   const useGroupStage = normalizedStage === 'group' && uniquePlayers.length >= GROUP_SIZE;
   const effectiveStage = useGroupStage ? 'group' : getInitialStage(uniquePlayers.length);
+  const season = await prisma.season.findUnique({
+    where: { seasonId },
+    select: { startTime: true }
+  });
+  const seasonStartTime = season?.startTime ? new Date(season.startTime) : new Date();
+
+  await prisma.season.update({
+    where: { seasonId },
+    data: {
+      status: 'active',
+      matchesGenerated: true,
+      joiningClosed: true,
+      endTime: estimateSeasonEndTime(seasonStartTime, uniquePlayers.length, useGroupStage)
+    }
+  });
+
   const matches = useGroupStage
-    ? await createGroupStageMatches(uniquePlayers, { ...options, stage: 'group' })
-    : await createMatches(uniquePlayers, { ...options, stage: effectiveStage });
+    ? await createGroupStageMatches(uniquePlayers, { ...options, stage: 'group', seasonStartTime })
+    : await createMatches(uniquePlayers, { ...options, stage: effectiveStage, seasonStartTime });
 
   const io = getIO();
   if (io) {

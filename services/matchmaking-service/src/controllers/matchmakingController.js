@@ -170,28 +170,36 @@ async function progressTournament(match) {
       third: thirdPlaceMatch?.winnerId || null
     };
 
-    await publishEvent(
-      Topics.SEASON_COMPLETED,
-      {
-        tournamentId: match.tournamentId,
-        seasonId: match.seasonId,
-        status: 'completed',
-        endedAt: new Date().toISOString(),
-        placements
-      },
-      match.seasonId
-    );
+    const finalizeSeason = async () => {
+      await publishEvent(
+        Topics.SEASON_COMPLETED,
+        {
+          tournamentId: match.tournamentId,
+          seasonId: match.seasonId,
+          status: 'completed',
+          endedAt: new Date().toISOString(),
+          placements
+        },
+        match.seasonId
+      );
 
-    const io = getIO();
-    if (io) {
-      const payload = {
-        tournamentId: match.tournamentId,
-        seasonId: match.seasonId,
-        placements
-      };
-      io.to(`season:${match.seasonId}`).emit('season:completed', payload);
-      io.to(`tournament:${match.tournamentId}`).emit('season:completed', payload);
-    }
+      const io = getIO();
+      if (io) {
+        const payload = {
+          tournamentId: match.tournamentId,
+          seasonId: match.seasonId,
+          placements
+        };
+        io.to(`season:${match.seasonId}`).emit('season:completed', payload);
+        io.to(`tournament:${match.tournamentId}`).emit('season:completed', payload);
+      }
+    };
+
+    setTimeout(() => {
+      finalizeSeason().catch((err) => {
+        logger.error({ err, seasonId: match.seasonId }, 'Failed to finalize season');
+      });
+    }, 30000);
     return;
   }
 

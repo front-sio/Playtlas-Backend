@@ -1,3 +1,4 @@
+// backend/api-gateway/src/socket/socketHandler.js
 const logger = require('../utils/logger');
 const jwt = require('jsonwebtoken');
 
@@ -36,22 +37,6 @@ const setupSocketIO = (io) => {
     socket.on('join:tournament', (tournamentId) => {
       socket.join(`tournament:${tournamentId}`);
       logger.info(`User ${socket.userId} joined tournament ${tournamentId}`);
-    });
-
-    // Handle match room joins
-    socket.on('join:match', (matchId) => {
-      socket.join(`match:${matchId}`);
-      logger.info(`User ${socket.userId} joined match ${matchId}`);
-    });
-
-    // Handle game state updates
-    socket.on('game:update', (data) => {
-      socket.to(`match:${data.matchId}`).emit('game:state', data);
-    });
-
-    // Handle player moves
-    socket.on('game:move', (data) => {
-      socket.to(`match:${data.matchId}`).emit('game:opponent-move', data);
     });
 
     // Handle chat messages

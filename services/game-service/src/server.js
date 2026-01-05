@@ -82,6 +82,10 @@ httpServer.listen(PORT, () => {
 });
 
 // Start background workers
-startGameSessionCleanupWorker();
+if (process.env.DISABLE_GAME_SESSION_CLEANUP === 'true') {
+  logger.warn('Game session cleanup worker disabled via DISABLE_GAME_SESSION_CLEANUP');
+} else {
+  startGameSessionCleanupWorker();
+}
 
 module.exports = { app, io };

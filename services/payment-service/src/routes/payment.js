@@ -1,6 +1,8 @@
 const express = require('express');
 const paymentController = require('../controllers/paymentController.js');
 const floatAdjustmentController = require('../controllers/floatAdjustmentController.js');
+const tournamentFeeController = require('../controllers/tournamentFeeController.js');
+const transferController = require('../controllers/transferController.js');
 const { authMiddleware } = require('../../../../shared/middlewares/authMiddleware.js');
 
 const router = express.Router();
@@ -34,6 +36,16 @@ router.get('/providers/:code', paymentController.getProviderInfo);
 router.get('/transactions', authMiddleware, paymentController.getTransactionHistory);
 router.get('/admin/transactions', authMiddleware, paymentController.listAdminTransactions);
 router.get('/admin/stats', authMiddleware, paymentController.getAdminStats);
+
+// Tournament fee endpoints
+router.post('/tournament-fee', authMiddleware, tournamentFeeController.payTournamentFee);
+router.get('/tournament-fees', authMiddleware, tournamentFeeController.getTournamentFees);
+router.post('/tournament-fees/:feeId/refund', authMiddleware, tournamentFeeController.refundTournamentFee);
+
+// Wallet transfer endpoints
+router.post('/transfer', authMiddleware, transferController.transferFunds);
+router.get('/transfers', authMiddleware, transferController.getTransfers);
+router.get('/transfers/:transferId', authMiddleware, transferController.getTransfer);
 
 // Callbacks/Webhooks (public endpoints)
 router.post('/callback/:provider', paymentController.handleCallback);

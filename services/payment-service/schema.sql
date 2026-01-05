@@ -149,6 +149,43 @@ CREATE TABLE IF NOT EXISTS flagged_transactions (
   FOREIGN KEY (rule_id) REFERENCES fraud_rules(rule_id)
 );
 
+-- Tournament fee transactions (season entry fees)
+CREATE TABLE IF NOT EXISTS tournament_fees (
+  fee_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL,
+  wallet_id UUID NOT NULL,
+  tournament_id UUID NOT NULL,
+  season_id UUID NOT NULL,
+  amount DECIMAL(15,2) NOT NULL CHECK (amount > 0),
+  currency TEXT NOT NULL DEFAULT 'TZS',
+  fee DECIMAL(15,2) NOT NULL DEFAULT 0,
+  reference_number TEXT UNIQUE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed', 'failed', 'refunded')),
+  failure_reason TEXT,
+  processed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  metadata JSONB,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Wallet transfer transactions (peer-to-peer transfers)
+CREATE TABLE IF NOT EXISTS wallet_transfers (
+  transfer_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  from_user_id UUID NOT NULL,
+  from_wallet_id UUID NOT NULL,
+  to_user_id UUID NOT NULL,
+  to_wallet_id UUID NOT NULL,
+  amount DECIMAL(15,2) NOT NULL CHECK (amount > 0),
+  currency TEXT NOT NULL DEFAULT 'TZS',
+  fee DECIMAL(15,2) NOT NULL DEFAULT 0,
+  description TEXT,
+  reference_number TEXT UNIQUE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed', 'failed', 'reversed')),
+  failure_reason TEXT,
+  processed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  metadata JSONB,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_payment_methods_user ON payment_methods(user_id);
 CREATE INDEX IF NOT EXISTS idx_payment_methods_phone ON payment_methods(phone_number);
@@ -167,6 +204,15 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_created ON payment_audit_log(created_at
 CREATE INDEX IF NOT EXISTS idx_daily_limits_user_date ON daily_limits(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_flagged_status ON flagged_transactions(status);
 CREATE INDEX IF NOT EXISTS idx_flagged_severity ON flagged_transactions(severity);
+CREATE INDEX IF NOT EXISTS idx_tournament_fees_user ON tournament_fees(user_id);
+CREATE INDEX IF NOT EXISTS idx_tournament_fees_reference ON tournament_fees(reference_number);
+CREATE INDEX IF NOT EXISTS idx_tournament_fees_tournament ON tournament_fees(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_tournament_fees_season ON tournament_fees(season_id);
+CREATE INDEX IF NOT EXISTS idx_tournament_fees_created ON tournament_fees(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wallet_transfers_from_user ON wallet_transfers(from_user_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_transfers_to_user ON wallet_transfers(to_user_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_transfers_reference ON wallet_transfers(reference_number);
+CREATE INDEX IF NOT EXISTS idx_wallet_transfers_created ON wallet_transfers(created_at DESC);
 
 -- Insert default fraud rules
 INSERT INTO fraud_rules (rule_name, rule_type, conditions, action, is_active) VALUES
