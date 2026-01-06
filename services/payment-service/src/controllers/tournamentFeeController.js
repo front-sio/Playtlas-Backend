@@ -56,25 +56,29 @@ exports.payTournamentFee = async (req, res) => {
         }
       });
 
-      // Log audit
-      await prisma.paymentAuditLog.create({
-        data: {
-          eventType: 'tournament_fee_paid',
-          userId,
-          referenceId: tournamentFee.feeId,
-          referenceType: 'tournament_fee',
-          amount: parsedAmount,
-          provider: null,
-          status: 'completed',
-          details: {
-            tournamentId,
-            seasonId,
-            referenceNumber
-          },
-          ipAddress: req.ip,
-          userAgent: req.get('user-agent')
-        }
-      });
+      // Log audit (best effort; do not fail payment on audit write)
+      try {
+        await prisma.paymentAuditLog.create({
+          data: {
+            eventType: 'tournament_fee_paid',
+            userId,
+            referenceId: tournamentFee.feeId,
+            referenceType: 'tournament_fee',
+            amount: parsedAmount,
+            provider: null,
+            status: 'completed',
+            details: {
+              tournamentId,
+              seasonId,
+              referenceNumber,
+              ipAddress: req.ip,
+              userAgent: req.get('user-agent')
+            }
+          }
+        });
+      } catch (auditError) {
+        logger.error('Failed to write tournament fee audit log:', auditError);
+      }
 
       logger.info({ userId, tournamentId, seasonId, amount: parsedAmount, referenceNumber }, 'Tournament fee paid');
 
@@ -90,31 +94,35 @@ exports.payTournamentFee = async (req, res) => {
       });
     } catch (walletError) {
       logger.error('Tournament fee wallet transfer failed:', walletError);
-      
-      // Create failed transaction record
-      await prisma.tournamentFee.create({
-        data: {
-          userId,
-          walletId: playerWalletId,
-          tournamentId,
-          seasonId,
-          amount: parsedAmount,
-          fee: 0,
-          currency: 'TZS',
-          referenceNumber,
-          status: 'failed',
-          failureReason: walletError.response?.data?.error || walletError.message,
-          processedAt: new Date(),
-          metadata: {
-            ip: req.ip,
-            userAgent: req.get('user-agent')
-          }
-        }
-      });
 
-      return res.status(400).json({ 
-        success: false, 
-        error: walletError.response?.data?.error || 'Failed to pay tournament fee' 
+      // Create failed transaction record (best effort)
+      try {
+        await prisma.tournamentFee.create({
+          data: {
+            userId,
+            walletId: playerWalletId,
+            tournamentId,
+            seasonId,
+            amount: parsedAmount,
+            fee: 0,
+            currency: 'TZS',
+            referenceNumber,
+            status: 'failed',
+            failureReason: walletError.response?.data?.error || walletError.message,
+            processedAt: new Date(),
+            metadata: {
+              ip: req.ip,
+              userAgent: req.get('user-agent')
+            }
+          }
+        });
+      } catch (recordError) {
+        logger.error('Failed to record tournament fee failure:', recordError);
+      }
+
+      return res.status(400).json({
+        success: false,
+        error: walletError.response?.data?.error || 'Failed to pay tournament fee'
       });
     }
   } catch (error) {
