@@ -53,6 +53,7 @@ app.get('/health', (req, res) => {
 
 // Routes
 app.use('/matchmaking', matchmakingRoutes);
+app.use('/api/matchmaking', require('./routes/seasonMatchmaking'));
 
 // Socket.IO setup
 setupSocketHandlers(io);

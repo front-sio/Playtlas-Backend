@@ -351,39 +351,58 @@ exports.createP2PMatch = async (player1Id, player2Id) => {
 };
 
 exports.initializeTournamentEventConsumer = () => {
-  subscribeEvents(
-    'matchmaking-service',
-    [Topics.GENERATE_MATCHES, Topics.SEASON_COMPLETED, Topics.MATCH_RESULT],
-    (topic, data) => {
-      if (topic === Topics.GENERATE_MATCHES) {
-        logger.info('Received GENERATE_MATCHES event', { tournamentId: data?.tournamentId, seasonId: data?.seasonId, playerCount: data?.players?.length });
-        handleTournamentMatchGeneration(data).catch(error => {
-          logger.error('Failed to process GENERATE_MATCHES event:', error);
-        });
+  let attempt = 0;
+
+  const startConsumer = async () => {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        await subscribeEvents(
+          'matchmaking-service',
+          [Topics.GENERATE_MATCHES, Topics.SEASON_COMPLETED, Topics.MATCH_RESULT],
+          (topic, data) => {
+            if (topic === Topics.GENERATE_MATCHES) {
+              logger.info('Received GENERATE_MATCHES event', { tournamentId: data?.tournamentId, seasonId: data?.seasonId, playerCount: data?.players?.length });
+              handleTournamentMatchGeneration(data).catch(error => {
+                logger.error('Failed to process GENERATE_MATCHES event:', error);
+              });
+              return;
+            }
+            if (topic === Topics.SEASON_COMPLETED) {
+              logger.info('Received SEASON_COMPLETED event', { tournamentId: data?.tournamentId, seasonId: data?.seasonId });
+              handleSeasonCompleted(data).catch(error => {
+                logger.error('Failed to process SEASON_COMPLETED event:', error);
+              });
+              return;
+            }
+            if (topic === Topics.MATCH_RESULT) {
+              logger.info('Received MATCH_RESULT event', { matchId: data?.matchId, winnerId: data?.winnerId });
+              completeMatchAndProgress({
+                matchId: data.matchId,
+                winnerId: data.winnerId,
+                player1Score: data.player1Score,
+                player2Score: data.player2Score
+              }).catch((error) => {
+                logger.error('Failed to process MATCH_RESULT event:', error);
+              });
+            }
+          }
+        );
+
+        logger.info('[matchmaking-consumer] Kafka consumer subscribed');
         return;
-      }
-      if (topic === Topics.SEASON_COMPLETED) {
-        logger.info('Received SEASON_COMPLETED event', { tournamentId: data?.tournamentId, seasonId: data?.seasonId });
-        handleSeasonCompleted(data).catch(error => {
-          logger.error('Failed to process SEASON_COMPLETED event:', error);
-        });
-        return;
-      }
-      if (topic === Topics.MATCH_RESULT) {
-        logger.info('Received MATCH_RESULT event', { matchId: data?.matchId, winnerId: data?.winnerId });
-        completeMatchAndProgress({
-          matchId: data.matchId,
-          winnerId: data.winnerId,
-          player1Score: data.player1Score,
-          player2Score: data.player2Score
-        }).catch((error) => {
-          logger.error('Failed to process MATCH_RESULT event:', error);
-        });
+      } catch (err) {
+        attempt += 1;
+        const delay = Math.min(1000 * 2 ** (attempt - 1), 10000);
+        logger.error({ err, attempt, delay }, '[matchmaking-consumer] Failed to subscribe to Kafka, retrying');
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
-  );
+  };
 
-  logger.info('Tournament event consumer initialized');
+  startConsumer().catch((err) => {
+    logger.error({ err }, '[matchmaking-consumer] Unexpected consumer startup error');
+  });
 };
 
 exports.createMatches = createMatches;

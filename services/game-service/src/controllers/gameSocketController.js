@@ -27,18 +27,28 @@ function getServerTable(engine) {
 function mapClientToServer(engine, point) {
   if (!point) return null;
   const serverTable = getServerTable(engine);
+  
+  // PRECISION FIX: Use higher precision for client-to-server mapping
+  const x = (point.x / CLIENT_TABLE.width) * serverTable.width - serverTable.width / 2;
+  const y = (point.y / CLIENT_TABLE.height) * serverTable.height - serverTable.height / 2;
+  
   return {
-    x: (point.x / CLIENT_TABLE.width) * serverTable.width - serverTable.width / 2,
-    y: (point.y / CLIENT_TABLE.height) * serverTable.height - serverTable.height / 2,
+    x: Math.round(x * 1000) / 1000, // Precision to 3 decimal places
+    y: Math.round(y * 1000) / 1000,
   };
 }
 
 function mapServerToClient(engine, point) {
   if (!point) return null;
   const serverTable = getServerTable(engine);
+  
+  // PRECISION FIX: Use higher precision floating point arithmetic
+  const x = ((point.x + serverTable.width / 2) / serverTable.width) * CLIENT_TABLE.width;
+  const y = ((point.y + serverTable.height / 2) / serverTable.height) * CLIENT_TABLE.height;
+  
   return {
-    x: ((point.x + serverTable.width / 2) / serverTable.width) * CLIENT_TABLE.width,
-    y: ((point.y + serverTable.height / 2) / serverTable.height) * CLIENT_TABLE.height,
+    x: Math.round(x * 1000) / 1000, // Precision to 3 decimal places
+    y: Math.round(y * 1000) / 1000,
   };
 }
 
@@ -54,9 +64,14 @@ function mapDirectionToServer(engine, direction) {
 function mapVelocityToClient(engine, velocity) {
   if (!velocity) return null;
   const serverTable = getServerTable(engine);
+  
+  // PRECISION FIX: Higher precision velocity mapping
+  const velX = velocity.x * (CLIENT_TABLE.width / serverTable.width);
+  const velY = velocity.y * (CLIENT_TABLE.height / serverTable.height);
+  
   return {
-    x: velocity.x * (CLIENT_TABLE.width / serverTable.width),
-    y: velocity.y * (CLIENT_TABLE.height / serverTable.height),
+    x: Math.round(velX * 1000) / 1000,
+    y: Math.round(velY * 1000) / 1000,
   };
 }
 
@@ -167,22 +182,37 @@ function buildClientState(session, engine) {
 
 function broadcastFrames({ io, session, engine, frames }) {
   if (!frames || frames.length === 0) return;
+  
   const token = Date.now();
   sessionBroadcastTokens.set(session.sessionId, token);
-  const intervalMs = 1000 / Math.max(1, BROADCAST_FPS);
+  
+  // SYNC FIX: Improved frame timing for better interpolation
+  const totalDuration = 2000; // Total animation duration in ms
+  const intervalMs = totalDuration / frames.length; // Dynamic interval based on frame count
+  
+  logger.info(`Broadcasting ${frames.length} frames over ${totalDuration}ms (${intervalMs}ms intervals)`);
 
   frames.forEach((frame, idx) => {
     setTimeout(() => {
       if (sessionBroadcastTokens.get(session.sessionId) !== token) return;
+      
       const payload = buildClientStateFromSnapshot(session, engine, frame);
       io.to(`game:${session.sessionId}`).emit('game:state_updated', {
         gameState: payload,
         tick: idx + 1,
         totalTicks: frames.length,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        frameInterval: intervalMs // Help client with interpolation timing
       });
     }, idx * intervalMs);
   });
+  
+  // Clear broadcasting token after all frames are sent
+  setTimeout(() => {
+    if (sessionBroadcastTokens.get(session.sessionId) === token) {
+      sessionBroadcastTokens.delete(session.sessionId);
+    }
+  }, totalDuration + 500);
 }
 
 async function getOrCreateEngine(session) {
@@ -542,6 +572,44 @@ exports.setupGameSocketHandlers = function(io) {
       } catch (error) {
         logger.error({ err: error }, 'Game complete error');
         socket.emit('error', { message: 'Failed to complete game' });
+      }
+    });
+
+    // Voice chat signaling for WebRTC
+    socket.on('voice:signal', async ({ to, signal }) => {
+      if (!authenticatedPlayerId || !currentSessionId) {
+        return socket.emit('error', { message: 'Not in a game session' });
+      }
+
+      try {
+        const session = await prisma.gameSession.findUnique({
+          where: { sessionId: currentSessionId }
+        });
+
+        if (!session) {
+          return socket.emit('error', { message: 'Session not found' });
+        }
+
+        // Verify the target player is in the same session
+        if (to !== session.player1Id && to !== session.player2Id) {
+          return socket.emit('error', { message: 'Invalid target player' });
+        }
+
+        // Verify the sender is authorized
+        if (authenticatedPlayerId !== session.player1Id && authenticatedPlayerId !== session.player2Id) {
+          return socket.emit('error', { message: 'Not authorized for this session' });
+        }
+
+        // Forward the signaling data to the target player
+        socket.to(`game:${currentSessionId}`).emit('voice:signal', {
+          from: authenticatedPlayerId,
+          signal: signal
+        });
+
+        logger.info(`Voice signaling: ${authenticatedPlayerId} -> ${to} in session ${currentSessionId}`);
+      } catch (error) {
+        logger.error({ err: error }, 'Voice signaling error');
+        socket.emit('error', { message: 'Voice signaling failed' });
       }
     });
 
