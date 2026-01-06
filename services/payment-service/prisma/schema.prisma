@@ -75,6 +75,25 @@ model Withdrawal {
   @@map("withdrawals")
 }
 
+model TournamentFee {
+  feeId           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String   @db.Uuid
+  walletId        String   @db.Uuid
+  tournamentId    String   @db.Uuid
+  seasonId        String   @db.Uuid
+  amount          Decimal  @db.Decimal(15, 2)
+  currency        String   @default("TZS") @db.Text
+  fee             Decimal  @default(0) @db.Decimal(15, 2)
+  referenceNumber String   @unique @db.Text
+  status          String   @default("completed") @db.Text
+  failureReason   String?  @db.Text
+  processedAt     DateTime @default(now())
+  metadata        Json?
+  createdAt       DateTime @default(now())
+
+  @@map("tournament_fees")
+}
+
 model PaymentAuditLog {
   auditId             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   eventType           String    @db.VarChar(128)
