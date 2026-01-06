@@ -125,6 +125,10 @@ class PaymentProcessingService {
       rolesKey: '',
       userIds: []
     };
+    this.financeManagersCache = {
+      fetchedAt: 0,
+      userIds: []
+    };
     this.serviceToken = null;
     this.serviceTokenExpiry = 0;
   }
@@ -237,10 +241,34 @@ class PaymentProcessingService {
     }
   }
 
+  async getFinanceManagerUserIds() {
+    const now = Date.now();
+    if (now - this.financeManagersCache.fetchedAt < 60 * 1000) {
+      return this.financeManagersCache.userIds;
+    }
+
+    try {
+      const users = await this.fetchUsersByRole('finance_manager');
+      const userIds = users
+        .filter((user) => user?.userId && user.isActive !== false)
+        .map((user) => user.userId);
+
+      const unique = Array.from(new Set(userIds));
+      this.financeManagersCache = {
+        fetchedAt: now,
+        userIds: unique
+      };
+      return unique;
+    } catch (error) {
+      logger.error('Failed to resolve finance managers for transaction notifications:', error);
+      return [];
+    }
+  }
+
   async notifyAdminsForApproval({ title, message, data }) {
-    const userIds = await this.getAdminUserIdsForApproval();
+    const userIds = await this.getFinanceManagerUserIds();
     if (!userIds.length) {
-      logger.warn('No admin users resolved for approval notifications');
+      logger.warn('No finance managers resolved for approval notifications');
       return;
     }
 
@@ -259,6 +287,31 @@ class PaymentProcessingService {
       }, { timeout: 8000 });
     } catch (error) {
       logger.error('Failed to send approval notifications to admins:', error);
+    }
+  }
+
+  async notifyFinanceManagers({ title, message, data, includeSound = false }) {
+    const userIds = await this.getFinanceManagerUserIds();
+    if (!userIds.length) {
+      logger.warn('No finance managers resolved for transaction notifications');
+      return;
+    }
+
+    try {
+      await axios.post(`${NOTIFICATION_SERVICE_URL}/notification/send-bulk`, {
+        userIds,
+        type: 'payment',
+        title,
+        message,
+        channel: 'in_app',
+        priority: 'high',
+        data: {
+          ...data,
+          playSound: includeSound
+        }
+      }, { timeout: 8000 });
+    } catch (error) {
+      logger.error('Failed to send transaction notifications to finance managers:', error);
     }
   }
 
@@ -371,6 +424,20 @@ class PaymentProcessingService {
         type: 'payment',
         title: 'Deposit Initiated',
         message: `Please complete the payment of ${totalAmount} TZS (includes ${depositFee} TZS fee) from ${maskPhoneNumber(sanitizedPhone)}`
+      });
+
+      await this.notifyFinanceManagers({
+        title: 'Deposit Initiated',
+        message: `User ${userId} initiated a deposit of TZS ${Number(totalAmount).toLocaleString()}. Reference: ${referenceNumber}.`,
+        data: {
+          userId,
+          depositId,
+          referenceNumber,
+          amount: totalAmount,
+          provider,
+          status: 'pending_payment',
+          actionUrl: '/admin/deposits'
+        }
       });
 
       return {
@@ -493,6 +560,20 @@ class PaymentProcessingService {
             provider: provider
           },
           includeSound: true
+        });
+
+        await this.notifyFinanceManagers({
+          title: 'Deposit Completed',
+          message: `Deposit ${parsedCallback.referenceNumber || deposit.referenceNumber} for TZS ${Number(deposit.amount).toLocaleString()} completed.`,
+          data: {
+            userId: deposit.userId,
+            depositId: deposit.depositId,
+            referenceNumber: parsedCallback.referenceNumber || deposit.referenceNumber,
+            amount: deposit.amount,
+            provider,
+            status: 'completed',
+            actionUrl: '/admin/deposits'
+          }
         });
       } else {
         // Log failed audit
@@ -787,6 +868,20 @@ class PaymentProcessingService {
             provider: withdrawal.provider
           },
           includeSound: true
+        });
+
+        await this.notifyFinanceManagers({
+          title: 'Withdrawal Completed',
+          message: `Withdrawal ${withdrawal.referenceNumber} for TZS ${Number(withdrawal.amount).toLocaleString()} completed.`,
+          data: {
+            userId: withdrawal.userId,
+            withdrawalId,
+            referenceNumber: withdrawal.referenceNumber,
+            amount: withdrawal.amount,
+            provider: withdrawal.provider,
+            status: 'completed',
+            actionUrl: '/admin/cashouts'
+          }
         });
       } catch (providerError) {
         // Refund wallet if provider fails
@@ -1214,6 +1309,20 @@ class PaymentProcessingService {
           provider: deposit.provider
         },
         includeSound: true
+      });
+
+      await this.notifyFinanceManagers({
+        title: 'Deposit Approved',
+        message: `Deposit ${deposit.referenceNumber} for TZS ${Number(deposit.amount).toLocaleString()} approved.`,
+        data: {
+          userId: deposit.userId,
+          depositId,
+          referenceNumber: deposit.referenceNumber,
+          amount: deposit.amount,
+          provider: deposit.provider,
+          status: 'completed',
+          actionUrl: '/admin/deposits'
+        }
       });
 
       return {

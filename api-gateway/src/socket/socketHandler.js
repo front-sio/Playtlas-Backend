@@ -92,8 +92,8 @@ const setupSocketIO = (io) => {
         }
 
         const playerId = requestedPlayerId || socket.userId;
-        const target = process.env.PLAYER_SERVICE_URL || 'http://localhost:3005';
-        const response = await fetch(`${target}/player/${playerId}/stats`, {
+        const target = process.env.PLAYER_SERVICE_URL || 'http://localhost:3002';
+        const response = await fetch(`${target}/api/players/${playerId}/stats`, {
           headers: {
             Authorization: `Bearer ${socket.authToken}`
           }

@@ -89,7 +89,7 @@ app.post('/api/lookup/matches', express.json(), async (req, res) => {
     const uniqueOpponents = Array.from(new Set(opponentIds.filter(Boolean)));
     const uniqueTournaments = Array.from(new Set(tournamentIds.filter(Boolean)));
 
-    const playerServiceUrl = process.env.PLAYER_SERVICE_URL || 'http://localhost:3005';
+    const playerServiceUrl = process.env.PLAYER_SERVICE_URL || 'http://localhost:3002';
     const tournamentServiceUrl = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3004';
 
     const opponents = {};
@@ -99,7 +99,7 @@ app.post('/api/lookup/matches', express.json(), async (req, res) => {
       Promise.all(
         uniqueOpponents.map(async (opponentId) => {
           try {
-            const response = await fetch(`${playerServiceUrl}/player/${opponentId}/stats`);
+            const response = await fetch(`${playerServiceUrl}/api/players/${opponentId}/stats`);
             if (!response.ok) return;
             const payload = await response.json();
             const username = payload?.data?.username;
