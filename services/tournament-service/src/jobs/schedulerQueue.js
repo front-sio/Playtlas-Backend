@@ -8,6 +8,7 @@ const QUEUE_NAME = 'tournament-scheduler';
 const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 5);
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 1);
 const SEASON_SCHEDULE_EVERY_MS = Number(process.env.SEASON_SCHEDULE_EVERY_MS || 5 * 60 * 1000);
+const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
 
 let queue;
 let worker;
@@ -19,12 +20,12 @@ function getQueue() {
   return queue;
 }
 
-function computeTimes(anchorTime, seasonDurationSeconds) {
+function computeTimes(anchorTime, matchDurationSeconds) {
   const fixtureTime = new Date(anchorTime);
   const joiningCloseAt = new Date(
     fixtureTime.getTime() - FIXTURE_DELAY_MINUTES * 60 * 1000
   );
-  const endTime = new Date(fixtureTime.getTime() + seasonDurationSeconds * 1000);
+  const endTime = new Date(fixtureTime.getTime() + matchDurationSeconds * 1000);
   return { fixtureTime, joiningCloseAt, endTime };
 }
 
@@ -46,7 +47,7 @@ async function ensureNextSeason(tournamentId) {
     select: {
       tournamentId: true,
       status: true,
-      seasonDuration: true,
+      matchDuration: true,
       stage: true,
       name: true
     }
@@ -74,11 +75,17 @@ async function ensureNextSeason(tournamentId) {
     select: { seasonNumber: true, endTime: true, status: true }
   });
 
+  const isLastSeasonFinal = lastSeason?.status === 'completed' || lastSeason?.status === 'finished';
+  if (lastSeason && !isLastSeasonFinal && lastSeason.endTime && now <= new Date(lastSeason.endTime)) {
+    return null;
+  }
+
   const nextSeasonNumber = lastSeason ? lastSeason.seasonNumber + 1 : 1;
-  const anchorTime = lastSeason?.endTime
+  const anchorTime = lastSeason?.endTime && !isLastSeasonFinal
     ? new Date(lastSeason.endTime)
     : new Date(now.getTime() + (JOIN_WINDOW_MINUTES + FIXTURE_DELAY_MINUTES) * 60 * 1000);
-  const { fixtureTime, joiningCloseAt, endTime } = computeTimes(anchorTime, tournament.seasonDuration);
+  const matchDurationSeconds = Number(tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS);
+  const { fixtureTime, joiningCloseAt, endTime } = computeTimes(anchorTime, matchDurationSeconds);
 
   const season = await prisma.season.create({
     data: {
@@ -161,7 +168,7 @@ async function triggerSeasonFixtures(seasonId) {
   const season = await prisma.season.findUnique({
     where: { seasonId },
     include: {
-      tournament: { select: { tournamentId: true, status: true, stage: true } },
+      tournament: { select: { tournamentId: true, status: true, stage: true, matchDuration: true } },
       tournamentPlayers: { select: { playerId: true, status: true } }
     }
   });
@@ -210,7 +217,8 @@ async function triggerSeasonFixtures(seasonId) {
       tournamentId: season.tournament.tournamentId,
       seasonId: season.seasonId,
       stage: tournamentStage,
-      players: activePlayers
+      players: activePlayers,
+      matchDurationSeconds: Number(season.tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS)
     },
     season.seasonId
   );
@@ -223,17 +231,27 @@ async function triggerSeasonFixtures(seasonId) {
 
 async function ensureTournamentSchedule(tournamentId) {
   const q = getQueue();
-  await q.add(
-    'ensure-next-season',
-    { tournamentId },
-    {
-      ...defaultJobOptions,
-      jobId: `tournament:${tournamentId}:ensure-next-season`,
-      repeat: { every: SEASON_SCHEDULE_EVERY_MS }
-    }
-  );
+  const repeatableJobs = await q.getRepeatableJobs();
+  const repeatableId = `tournament:${tournamentId}:ensure-next-season`;
+  const hasRepeatable = repeatableJobs.some((job) => job.id === repeatableId);
+  if (!hasRepeatable) {
+    await q.add(
+      'ensure-next-season',
+      { tournamentId },
+      {
+        ...defaultJobOptions,
+        jobId: repeatableId,
+        repeat: { every: SEASON_SCHEDULE_EVERY_MS }
+      }
+    );
+  }
 
   // Also run once immediately to seed first season.
+  try {
+    await q.remove(`tournament:${tournamentId}:ensure-next-season-once`);
+  } catch (err) {
+    // ignore missing jobs
+  }
   await q.add(
     'ensure-next-season-once',
     { tournamentId },
@@ -242,6 +260,27 @@ async function ensureTournamentSchedule(tournamentId) {
       jobId: `tournament:${tournamentId}:ensure-next-season-once`
     }
   );
+}
+
+async function ensureActiveTournamentSchedules() {
+  const activeTournaments = await prisma.tournament.findMany({
+    where: { status: 'active' },
+    select: { tournamentId: true }
+  });
+
+  if (!activeTournaments.length) {
+    logger.info('[scheduler] No active tournaments to schedule');
+    return;
+  }
+
+  for (const tournament of activeTournaments) {
+    try {
+      await ensureTournamentSchedule(tournament.tournamentId);
+      logger.info({ tournamentId: tournament.tournamentId }, '[scheduler] Active tournament schedule ensured');
+    } catch (err) {
+      logger.error({ err, tournamentId: tournament.tournamentId }, '[scheduler] Failed to ensure active tournament schedule');
+    }
+  }
 }
 
 async function cancelTournamentSchedule(tournamentId) {
@@ -281,7 +320,7 @@ async function cancelTournamentSchedule(tournamentId) {
   for (const season of seasons) {
     await removeJobSafe(`season:${season.seasonId}:close-joining`);
     await removeJobSafe(`season:${season.seasonId}:trigger-fixtures`);
-    await removeJobSafe(`season:${season.seasonId}:complete`);
+  await removeJobSafe(`season:${season.seasonId}:complete`);
   }
 
   logger.info({ tournamentId }, '[scheduler] Tournament schedule cancelled');
@@ -366,24 +405,7 @@ async function completeSeason(seasonId) {
   if (season.status === 'completed' || season.status === 'finished') return;
   if (season.endTime && new Date(season.endTime) > new Date()) return;
 
-  await prisma.season.update({
-    where: { seasonId },
-    data: { status: 'completed' }
-  });
-
-  await publishEvent(
-    Topics.SEASON_COMPLETED,
-    {
-      tournamentId: season.tournamentId,
-      seasonId: season.seasonId,
-      status: 'completed',
-      endedAt: new Date().toISOString()
-    },
-    season.seasonId
-  );
-
-  logger.info({ seasonId }, '[scheduler] Season completed');
-  await ensureNextSeason(season.tournamentId);
+  logger.info({ seasonId }, '[scheduler] Season completion is driven by match results; skipping timed completion');
 }
 
 async function startSchedulerWorker() {
@@ -425,6 +447,7 @@ async function startSchedulerWorker() {
 module.exports = {
   startSchedulerWorker,
   ensureTournamentSchedule,
+  ensureActiveTournamentSchedules,
   scheduleTournamentStart,
   cancelTournamentSchedule
 };

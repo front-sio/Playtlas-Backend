@@ -16,6 +16,9 @@ const NEXT_STAGE = {
 const GROUP_QUALIFIERS = Number(process.env.GROUP_QUALIFIERS || 2);
 
 const BYE_PLAYER_ID = '00000000-0000-0000-0000-000000000000';
+const SEASON_COMPLETION_DELAY_MS = 30000;
+const seasonCompletionTimers = new Map();
+const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
 
 function getInitialStage(playerCount) {
   if (playerCount <= 2) return 'final';
@@ -34,6 +37,10 @@ function getMatchLoser(match) {
   if (match.player1Id === match.winnerId) return match.player2Id;
   if (match.player2Id === match.winnerId) return match.player1Id;
   return null;
+}
+
+function getMatchDurationSeconds(match) {
+  return Number(match?.metadata?.matchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
 }
 
 async function emitRoundMatches(tournamentId, seasonId, stage, roundNumber, matches) {
@@ -132,7 +139,8 @@ async function progressTournament(match) {
       tournamentId: match.tournamentId,
       seasonId: match.seasonId,
       stage: nextStage,
-      roundNumber: 1
+      roundNumber: 1,
+      matchDurationSeconds: getMatchDurationSeconds(match)
     });
 
     await emitRoundMatches(match.tournamentId, match.seasonId, nextStage, 1, nextMatches);
@@ -154,52 +162,6 @@ async function progressTournament(match) {
   }
 
   if (match.stage === 'final') {
-    const thirdPlaceMatch = await prisma.match.findFirst({
-      where: {
-        tournamentId: match.tournamentId,
-        seasonId: match.seasonId,
-        stage: 'third_place',
-        status: 'completed'
-      }
-    });
-
-    const finalLoser = getMatchLoser(match);
-    const placements = {
-      first: match.winnerId,
-      second: finalLoser || null,
-      third: thirdPlaceMatch?.winnerId || null
-    };
-
-    const finalizeSeason = async () => {
-      await publishEvent(
-        Topics.SEASON_COMPLETED,
-        {
-          tournamentId: match.tournamentId,
-          seasonId: match.seasonId,
-          status: 'completed',
-          endedAt: new Date().toISOString(),
-          placements
-        },
-        match.seasonId
-      );
-
-      const io = getIO();
-      if (io) {
-        const payload = {
-          tournamentId: match.tournamentId,
-          seasonId: match.seasonId,
-          placements
-        };
-        io.to(`season:${match.seasonId}`).emit('season:completed', payload);
-        io.to(`tournament:${match.tournamentId}`).emit('season:completed', payload);
-      }
-    };
-
-    setTimeout(() => {
-      finalizeSeason().catch((err) => {
-        logger.error({ err, seasonId: match.seasonId }, 'Failed to finalize season');
-      });
-    }, 30000);
     return;
   }
 
@@ -231,7 +193,8 @@ async function progressTournament(match) {
       tournamentId: match.tournamentId,
       seasonId: match.seasonId,
       stage: 'final',
-      roundNumber: match.roundNumber
+      roundNumber: match.roundNumber,
+      matchDurationSeconds: getMatchDurationSeconds(match)
     });
     await emitRoundMatches(match.tournamentId, match.seasonId, 'final', match.roundNumber, finalMatches);
     return;
@@ -261,7 +224,8 @@ async function progressTournament(match) {
         tournamentId: match.tournamentId,
         seasonId: match.seasonId,
         stage: 'third_place',
-        roundNumber: match.roundNumber + 1
+        roundNumber: match.roundNumber + 1,
+        matchDurationSeconds: getMatchDurationSeconds(match)
       });
       await emitRoundMatches(match.tournamentId, match.seasonId, 'third_place', match.roundNumber + 1, thirdMatches);
       return;
@@ -281,7 +245,8 @@ async function progressTournament(match) {
         tournamentId: match.tournamentId,
         seasonId: match.seasonId,
         stage: 'final',
-        roundNumber: match.roundNumber + 1
+        roundNumber: match.roundNumber + 1,
+        matchDurationSeconds: getMatchDurationSeconds(match)
       });
       await emitRoundMatches(match.tournamentId, match.seasonId, 'final', match.roundNumber + 1, finalMatches);
     }
@@ -311,10 +276,108 @@ async function progressTournament(match) {
     tournamentId: match.tournamentId,
     seasonId: match.seasonId,
     stage: nextStage,
-    roundNumber: match.roundNumber + 1
+    roundNumber: match.roundNumber + 1,
+    matchDurationSeconds: getMatchDurationSeconds(match)
   });
 
   await emitRoundMatches(match.tournamentId, match.seasonId, nextStage, match.roundNumber + 1, nextMatches);
+}
+
+async function finalizeSeasonIfReady(match) {
+  if (!match?.seasonId || !match?.tournamentId) return;
+  if (seasonCompletionTimers.has(match.seasonId)) return;
+
+  const pendingCount = await prisma.match.count({
+    where: {
+      tournamentId: match.tournamentId,
+      seasonId: match.seasonId,
+      status: { notIn: ['completed', 'cancelled'] }
+    }
+  });
+  if (pendingCount > 0) return;
+
+  const finalMatch = await prisma.match.findFirst({
+    where: {
+      tournamentId: match.tournamentId,
+      seasonId: match.seasonId,
+      stage: 'final',
+      status: 'completed'
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  if (!finalMatch?.winnerId) {
+    logger.warn(
+      { seasonId: match.seasonId, tournamentId: match.tournamentId },
+      'Season appears complete but final match winner is missing'
+    );
+    return;
+  }
+
+  const thirdPlaceMatch = await prisma.match.findFirst({
+    where: {
+      tournamentId: match.tournamentId,
+      seasonId: match.seasonId,
+      stage: 'third_place',
+      status: 'completed'
+    },
+    orderBy: { createdAt: 'desc' }
+  });
+
+  const finalizeSeason = async () => {
+    const recheckPending = await prisma.match.count({
+      where: {
+        tournamentId: match.tournamentId,
+        seasonId: match.seasonId,
+        status: { notIn: ['completed', 'cancelled'] }
+      }
+    });
+    if (recheckPending > 0) {
+      seasonCompletionTimers.delete(match.seasonId);
+      return;
+    }
+
+    const placements = {
+      first: finalMatch.winnerId,
+      second: getMatchLoser(finalMatch) || null,
+      third: thirdPlaceMatch?.winnerId || null
+    };
+
+    await publishEvent(
+      Topics.SEASON_COMPLETED,
+      {
+        tournamentId: match.tournamentId,
+        seasonId: match.seasonId,
+        status: 'completed',
+        endedAt: new Date().toISOString(),
+        placements
+      },
+      match.seasonId
+    );
+
+    const io = getIO();
+    if (io) {
+      const payload = {
+        tournamentId: match.tournamentId,
+        seasonId: match.seasonId,
+        placements
+      };
+      io.to(`season:${match.seasonId}`).emit('season:completed', payload);
+      io.to(`tournament:${match.tournamentId}`).emit('season:completed', payload);
+    }
+  };
+
+  const timer = setTimeout(() => {
+    finalizeSeason()
+      .catch((err) => {
+        logger.error({ err, seasonId: match.seasonId }, 'Failed to finalize season');
+      })
+      .finally(() => {
+        seasonCompletionTimers.delete(match.seasonId);
+      });
+  }, SEASON_COMPLETION_DELAY_MS);
+
+  seasonCompletionTimers.set(match.seasonId, timer);
 }
 
 async function completeMatchAndProgress({ matchId, winnerId, player1Score, player2Score }) {
@@ -357,6 +420,7 @@ async function completeMatchAndProgress({ matchId, winnerId, player1Score, playe
 
   logger.info(`Match ${matchId} completed, winner: ${winnerId}`);
   await progressTournament(updatedMatch);
+  await finalizeSeasonIfReady(updatedMatch);
   return updatedMatch;
 }
 

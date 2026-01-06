@@ -2,6 +2,7 @@ const axios = require('axios');
 const { prisma } = require('../config/db');
 const logger = require('../utils/logger');
 const { subscribeEvents, Topics } = require('../../../../shared/events');
+const { ensureTournamentSchedule } = require('../jobs/schedulerQueue');
 
 const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3002';
 
@@ -49,7 +50,7 @@ async function transferFunds({ fromWalletId, toWalletId, amount, description, me
 }
 
 async function handleSeasonCompleted(payload) {
-  const { tournamentId, seasonId, placements } = payload || {};
+  const { tournamentId, seasonId, placements, endedAt } = payload || {};
   if (!tournamentId || !seasonId) return;
   if (!placements || !placements.first) {
     logger.info({ seasonId }, '[seasonCompletion] No placements provided; skipping payout');
@@ -99,10 +100,20 @@ async function handleSeasonCompleted(payload) {
   const remaining = normalizeMoney(potAmount - platformFee);
 
   const hasThirdPlace = Boolean(placements.third);
-  const secondPct = hasThirdPlace ? SECOND_PLACE_PERCENTAGE : 0;
-  const thirdPct = hasThirdPlace ? THIRD_PLACE_PERCENTAGE : 0;
+  const hasSecondPlace = Boolean(placements.second);
+  let firstPct = FIRST_PLACE_PERCENTAGE;
+  let secondPct = hasThirdPlace ? SECOND_PLACE_PERCENTAGE : (hasSecondPlace ? SECOND_PLACE_PERCENTAGE : 0);
+  let thirdPct = hasThirdPlace ? THIRD_PLACE_PERCENTAGE : 0;
 
-  let firstAmount = normalizeMoney(remaining * FIRST_PLACE_PERCENTAGE);
+  if (!hasThirdPlace && hasSecondPlace) {
+    const totalPct = FIRST_PLACE_PERCENTAGE + SECOND_PLACE_PERCENTAGE;
+    if (totalPct > 0) {
+      firstPct = FIRST_PLACE_PERCENTAGE / totalPct;
+      secondPct = SECOND_PLACE_PERCENTAGE / totalPct;
+    }
+  }
+
+  let firstAmount = normalizeMoney(remaining * firstPct);
   let secondAmount = normalizeMoney(remaining * secondPct);
   let thirdAmount = normalizeMoney(remaining * thirdPct);
 
@@ -167,7 +178,7 @@ async function handleSeasonCompleted(payload) {
   await prisma.$transaction(async (tx) => {
     await tx.season.update({
       where: { seasonId },
-      data: { status: 'completed' }
+      data: { status: 'completed', endTime: endedAt ? new Date(endedAt) : new Date() }
     });
 
     await tx.tournamentPlayer.updateMany({
@@ -194,6 +205,8 @@ async function handleSeasonCompleted(payload) {
     { seasonId, tournamentId, platformFee, firstAmount, secondAmount, thirdAmount },
     '[seasonCompletion] Payouts completed'
   );
+
+  await ensureTournamentSchedule(tournamentId);
 }
 
 async function startSeasonCompletionConsumer() {

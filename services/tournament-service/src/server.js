@@ -6,7 +6,7 @@ const tournamentRoutes = require('./routes/tournamentRoutes');
 const logger = require('./utils/logger');
 const { startTournamentCommandConsumer } = require('./kafka/commandConsumer');
 const { startSeasonCompletionConsumer } = require('./kafka/seasonCompletionConsumer');
-const { startSchedulerWorker } = require('./jobs/schedulerQueue');
+const { startSchedulerWorker, ensureActiveTournamentSchedules } = require('./jobs/schedulerQueue');
 
 const app = express();
 
@@ -31,6 +31,9 @@ app.listen(PORT, () => {
   // BullMQ scheduler worker for seasons/fixtures (safe to start early)
   startSchedulerWorker().catch((err) => {
     logger.error({ err }, '[tournament-service] Failed to start scheduler worker');
+  });
+  ensureActiveTournamentSchedules().catch((err) => {
+    logger.error({ err }, '[tournament-service] Failed to ensure active tournament schedules');
   });
   // Kafka consumer for admin-driven tournament commands
   startTournamentCommandConsumer().catch((err) => {

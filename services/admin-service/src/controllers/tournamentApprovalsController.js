@@ -123,14 +123,14 @@ exports.requestCreateTournament = async (req, res) => {
     const requester = { userId: req.user.userId, role: req.user.role };
     assertRoleAllowed(REQUEST_ROLES, requester.role, 'Insufficient role to request tournament creation');
 
-    const { name, description, entryFee, maxPlayers, seasonDuration, bypassApproval, bypassReason } = req.body;
+    const { name, description, entryFee, maxPlayers, matchDuration, seasonDuration, bypassApproval, bypassReason } = req.body;
     if (!name || entryFee === undefined) {
       return res.status(400).json({ success: false, error: 'name and entryFee are required' });
     }
 
     const approval = await createApprovalRequest({
       action: 'CREATE',
-      payload: { name, description, entryFee, maxPlayers, seasonDuration },
+      payload: { name, description, entryFee, maxPlayers, matchDuration: matchDuration || seasonDuration },
       requester
     });
 

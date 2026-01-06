@@ -46,7 +46,9 @@ const buildTournamentReadModelData = (payload) => {
     competitionWalletId: payload?.competitionWalletId ?? null,
     startTime: toDate(payload?.startTime),
     endTime: toDate(payload?.endTime),
-    seasonDuration: payload?.seasonDuration !== undefined ? Number(payload.seasonDuration) : undefined,
+    matchDuration: payload?.matchDuration !== undefined
+      ? Number(payload.matchDuration)
+      : (payload?.seasonDuration !== undefined ? Number(payload.seasonDuration) : undefined),
     updatedAt: toDate(payload?.updatedAt) || new Date(),
     lastEventAt: new Date(),
     isDeleted

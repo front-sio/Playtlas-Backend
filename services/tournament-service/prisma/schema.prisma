@@ -19,7 +19,7 @@ model Tournament {
   competitionWalletId String?   @db.Uuid
   startTime           DateTime?
   endTime             DateTime?
-  seasonDuration      Int       @default(1200)
+  matchDuration       Int       @default(1200) @map("season_duration")
   winnerId            String?   @db.Uuid
   metadata            Json?
   createdAt           DateTime  @default(now())

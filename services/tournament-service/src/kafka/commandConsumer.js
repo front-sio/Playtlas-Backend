@@ -3,7 +3,7 @@ const { prisma } = require('../config/db');
 const { subscribeEvents, publishEvent, Topics } = require('../../../../shared/events');
 const { ensureTournamentSchedule, startSchedulerWorker, scheduleTournamentStart, cancelTournamentSchedule } = require('../jobs/schedulerQueue');
 
-const DEFAULT_SEASON_DURATION = 20 * 60;
+const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
 function buildTournamentMetadata(existing, actor) {
   const base = existing && typeof existing === 'object' ? { ...existing } : {};
   if (actor) {
@@ -26,7 +26,7 @@ function buildTournamentSnapshot(tournament, extra = {}) {
     competitionWalletId: tournament.competitionWalletId || null,
     startTime: tournament.startTime ? tournament.startTime.toISOString() : null,
     endTime: tournament.endTime ? tournament.endTime.toISOString() : null,
-    seasonDuration: tournament.seasonDuration,
+    matchDuration: tournament.matchDuration,
     createdAt: tournament.createdAt ? tournament.createdAt.toISOString() : null,
     updatedAt: tournament.updatedAt ? tournament.updatedAt.toISOString() : null,
     ...extra
@@ -71,7 +71,7 @@ async function publishCommandResult(commandId, action, status, data, error) {
 }
 
 async function handleCreate(commandId, data, actor) {
-  const { name, description, entryFee, maxPlayers, seasonDuration, startTime } = data;
+  const { name, description, entryFee, maxPlayers, matchDuration, seasonDuration, startTime } = data;
   if (!name || entryFee === undefined) {
     throw new Error('name and entryFee are required');
   }
@@ -84,7 +84,7 @@ async function handleCreate(commandId, data, actor) {
       description: description || null,
       entryFee,
       maxPlayers: maxPlayers || undefined,
-      seasonDuration: seasonDuration || DEFAULT_SEASON_DURATION,
+      matchDuration: matchDuration || seasonDuration || DEFAULT_MATCH_DURATION_SECONDS,
       competitionWalletId: null,
       startTime: parsedStartTime,
       status: 'upcoming',

@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 
 const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 5);
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 1);
+const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
 
 function pad(num) {
   return String(num).padStart(2, '0');
@@ -26,7 +27,7 @@ const startSeasonGenerator = () => {
         where: { status: 'active' },
         select: {
           tournamentId: true,
-          seasonDuration: true,
+          matchDuration: true,
           name: true
         }
       });
@@ -63,7 +64,8 @@ const startSeasonGenerator = () => {
         const startTime = new Date(
           now.getTime() + (JOIN_WINDOW_MINUTES + FIXTURE_DELAY_MINUTES) * 60 * 1000
         );
-        const endTime = new Date(startTime.getTime() + tournament.seasonDuration * 1000);
+        const matchDurationSeconds = Number(tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS);
+        const endTime = new Date(startTime.getTime() + matchDurationSeconds * 1000);
 
         const newSeason = await prisma.season.create({
           data: {

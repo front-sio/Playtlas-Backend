@@ -283,6 +283,7 @@ router.post('/tournaments',
     body('entryFee').isFloat({ min: 0 }),
     body('maxPlayers').optional().isInt({ min: 2 }),
     body('startTime').optional().isISO8601(),
+    body('matchDuration').optional().isInt({ min: 60 }),
     body('seasonDuration').optional().isInt({ min: 300 }),
     handleValidationErrors
   ],

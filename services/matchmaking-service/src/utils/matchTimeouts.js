@@ -1,6 +1,6 @@
 const { completeMatchAndProgress } = require('../controllers/matchmakingController');
 
-const MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
+const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
 const MATCH_TIMEOUT_CHECK_INTERVAL = Number(process.env.MATCH_TIMEOUT_CHECK_INTERVAL || 15000);
 
 function buildCancelMetadata(reason, winnerId) {
@@ -76,7 +76,8 @@ function startMatchTimeoutMonitor(io, prisma) {
         take: 200
       });
 
-      const durationMs = MATCH_DURATION_SECONDS * 1000;
+      const matchDurationSeconds = Number(match?.metadata?.matchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
+      const durationMs = matchDurationSeconds * 1000;
       for (const match of candidates) {
         const baseTime = match.startedAt || match.scheduledTime;
         if (!baseTime) continue;

@@ -7,7 +7,7 @@ const { ensureTournamentSchedule, scheduleTournamentStart, cancelTournamentSched
 const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://payment-service:3000';
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 4);
 const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 30);
-const DEFAULT_SEASON_DURATION = 20 * 60;
+const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
 
 function getSeasonJoiningCloseTime(seasonStartTime) {
   const fixtureTime = new Date(seasonStartTime);
@@ -27,7 +27,7 @@ function buildTournamentSnapshot(tournament, extra = {}) {
     competitionWalletId: tournament.competitionWalletId || null,
     startTime: tournament.startTime ? tournament.startTime.toISOString() : null,
     endTime: tournament.endTime ? tournament.endTime.toISOString() : null,
-    seasonDuration: tournament.seasonDuration,
+    matchDuration: tournament.matchDuration,
     createdAt: tournament.createdAt ? tournament.createdAt.toISOString() : null,
     updatedAt: tournament.updatedAt ? tournament.updatedAt.toISOString() : null,
     ...extra
@@ -36,7 +36,7 @@ function buildTournamentSnapshot(tournament, extra = {}) {
 
 exports.createTournament = async (req, res) => {
   try {
-    const { name, description, entryFee, maxPlayers, startTime, seasonDuration } = req.body;
+    const { name, description, entryFee, maxPlayers, startTime, matchDuration, seasonDuration } = req.body;
 
     const tournament = await prisma.tournament.create({
       data: {
@@ -45,7 +45,7 @@ exports.createTournament = async (req, res) => {
         entryFee,
         maxPlayers,
         startTime: startTime ? new Date(startTime) : new Date(Date.now() + 3600000),
-        seasonDuration: seasonDuration || DEFAULT_SEASON_DURATION,
+        matchDuration: matchDuration || seasonDuration || DEFAULT_MATCH_DURATION_SECONDS,
         competitionWalletId: null
       }
     });

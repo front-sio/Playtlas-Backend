@@ -21,7 +21,9 @@ function buildUpdateData(payload, topic) {
     competitionWalletId: payload.competitionWalletId ?? null,
     startTime: toDate(payload.startTime),
     endTime: toDate(payload.endTime),
-    seasonDuration: payload.seasonDuration !== undefined ? Number(payload.seasonDuration) : undefined,
+    matchDuration: payload.matchDuration !== undefined
+      ? Number(payload.matchDuration)
+      : (payload.seasonDuration !== undefined ? Number(payload.seasonDuration) : undefined),
     createdAt: toDate(payload.createdAt),
     updatedAt: toDate(payload.updatedAt) || new Date(),
     lastEventAt: new Date(),

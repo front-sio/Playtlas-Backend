@@ -9,7 +9,7 @@ const axios = require('axios');
 const BYE_PLAYER_ID = '00000000-0000-0000-0000-000000000000';
 const GROUP_SIZE = Number(process.env.GROUP_SIZE || 4);
 const GROUP_QUALIFIERS = Number(process.env.GROUP_QUALIFIERS || 2);
-const MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
+const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
 const MAX_PARALLEL_MATCHES = Number(process.env.MATCH_MAX_PARALLEL || 5);
 const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://wallet-service:3000';
 
@@ -26,8 +26,8 @@ function getBracketRounds(playerCount) {
   return Math.ceil(Math.log2(playerCount));
 }
 
-function estimateSeasonEndTime(startTime, playerCount, isGroupStage) {
-  const durationMs = MATCH_DURATION_SECONDS * 1000;
+function estimateSeasonEndTime(startTime, playerCount, isGroupStage, matchDurationSeconds) {
+  const durationMs = matchDurationSeconds * 1000;
   let totalSlots = 0;
   if (isGroupStage) {
     const groups = Math.ceil(playerCount / GROUP_SIZE);
@@ -46,12 +46,12 @@ function estimateSeasonEndTime(startTime, playerCount, isGroupStage) {
   return new Date(endMs);
 }
 
-async function getRoundStartTime(seasonId, roundNumber, fallbackStart) {
+async function getRoundStartTime(seasonId, roundNumber, fallbackStart, matchDurationSeconds) {
   if (roundNumber <= 1 && fallbackStart) {
     return fallbackStart;
   }
 
-  const durationMs = MATCH_DURATION_SECONDS * 1000;
+  const durationMs = matchDurationSeconds * 1000;
   const lastMatch = await prisma.match.findFirst({
     where: {
       seasonId,
@@ -150,7 +150,8 @@ async function cancelSeasonForInsufficientPlayers({ tournamentId, seasonId, play
 async function createMatches(players, options = {}) {
   logger.info('Creating matches', { players, options });
 
-  const { seasonStartTime: rawSeasonStartTime, ...matchOptions } = options;
+  const { seasonStartTime: rawSeasonStartTime, matchDurationSeconds: rawMatchDurationSeconds, ...matchOptions } = options;
+  const matchDurationSeconds = Number(rawMatchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
 
   // TODO: Implement skill-based seeding for better match quality
   // For now, we shuffle players to randomize pairings
@@ -159,9 +160,9 @@ async function createMatches(players, options = {}) {
   const createdMatches = [];
   const seasonStartTime = rawSeasonStartTime ? new Date(rawSeasonStartTime) : null;
   const roundNumber = Number(matchOptions.roundNumber || 1);
-  const durationMs = MATCH_DURATION_SECONDS * 1000;
+  const durationMs = matchDurationSeconds * 1000;
   const roundStartTime = matchOptions.seasonId
-    ? await getRoundStartTime(matchOptions.seasonId, roundNumber, seasonStartTime)
+    ? await getRoundStartTime(matchOptions.seasonId, roundNumber, seasonStartTime, matchDurationSeconds)
     : new Date(Date.now() + 60000);
 
   for (let i = 0; i < seededPlayers.length - 1; i += 2) {
@@ -176,6 +177,7 @@ async function createMatches(players, options = {}) {
       player2Id,
       status: 'scheduled',
       scheduledTime,
+      metadata: { matchDurationSeconds },
       ...matchOptions,
     };
 
@@ -195,7 +197,7 @@ async function createMatches(players, options = {}) {
         scheduledTime: new Date(),
         completedAt: new Date(),
         winnerId: byePlayer,
-        metadata: { bye: true },
+        metadata: { bye: true, matchDurationSeconds },
         ...matchOptions
       }
     });
@@ -217,11 +219,12 @@ function chunkPlayers(players, size) {
 async function createGroupStageMatches(players, options = {}) {
   logger.info('Creating group stage matches', { playerCount: players.length, options });
 
-  const { seasonStartTime: rawSeasonStartTime, ...matchOptions } = options;
+  const { seasonStartTime: rawSeasonStartTime, matchDurationSeconds: rawMatchDurationSeconds, ...matchOptions } = options;
+  const matchDurationSeconds = Number(rawMatchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
   const seasonStartTime = rawSeasonStartTime ? new Date(rawSeasonStartTime) : null;
-  const durationMs = MATCH_DURATION_SECONDS * 1000;
+  const durationMs = matchDurationSeconds * 1000;
   const roundStartTime = matchOptions.seasonId
-    ? await getRoundStartTime(matchOptions.seasonId, 1, seasonStartTime)
+    ? await getRoundStartTime(matchOptions.seasonId, 1, seasonStartTime, matchDurationSeconds)
     : new Date(Date.now() + 60000);
 
   const shuffled = [...players].sort(() => Math.random() - 0.5);
@@ -243,7 +246,7 @@ async function createGroupStageMatches(players, options = {}) {
             player2Id,
             status: 'scheduled',
             scheduledTime: new Date(roundStartTime.getTime() + Math.floor(createdMatches.length / MAX_PARALLEL_MATCHES) * durationMs),
-            metadata: { groupId, groupLabel },
+            metadata: { groupId, groupLabel, matchDurationSeconds },
             ...matchOptions
           }
         });
@@ -257,7 +260,7 @@ async function createGroupStageMatches(players, options = {}) {
 }
 
 async function handleTournamentMatchGeneration(data) {
-  const { tournamentId, seasonId, players, stage } = data;
+  const { tournamentId, seasonId, players, stage, matchDurationSeconds: rawMatchDurationSeconds } = data;
   if (!tournamentId || !seasonId || !Array.isArray(players)) {
     logger.warn({ data }, 'Invalid tournament match generation payload');
     return;
@@ -271,7 +274,8 @@ async function handleTournamentMatchGeneration(data) {
   }
 
   const normalizedStage = typeof stage === 'string' ? stage : '';
-  const options = { tournamentId, seasonId, stage: normalizedStage || undefined, roundNumber: 1 };
+  const matchDurationSeconds = Number(rawMatchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
+  const options = { tournamentId, seasonId, stage: normalizedStage || undefined, roundNumber: 1, matchDurationSeconds };
   const useGroupStage = normalizedStage === 'group' && uniquePlayers.length >= GROUP_SIZE;
   const effectiveStage = useGroupStage ? 'group' : getInitialStage(uniquePlayers.length);
   const season = await prisma.season.findUnique({
@@ -286,7 +290,7 @@ async function handleTournamentMatchGeneration(data) {
       status: 'active',
       matchesGenerated: true,
       joiningClosed: true,
-      endTime: estimateSeasonEndTime(seasonStartTime, uniquePlayers.length, useGroupStage)
+      endTime: estimateSeasonEndTime(seasonStartTime, uniquePlayers.length, useGroupStage, matchDurationSeconds)
     }
   });
 
