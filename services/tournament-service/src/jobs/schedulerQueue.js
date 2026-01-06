@@ -2,6 +2,7 @@ const logger = require('../utils/logger');
 const { prisma } = require('../config/db');
 const { createQueue, createWorker, defaultJobOptions } = require('../../../../shared/config/redis');
 const { publishEvent, Topics } = require('../../../../shared/events');
+const { emitSeasonUpdate } = require('../utils/socketEmitter');
 
 const QUEUE_NAME = 'tournament-scheduler';
 
@@ -98,6 +99,12 @@ async function ensureNextSeason(tournamentId) {
       startTime: fixtureTime,
       endTime
     }
+  });
+
+  await emitSeasonUpdate({
+    tournamentId,
+    seasonId: season.seasonId,
+    event: 'season_created'
   });
 
   // Close joining and trigger fixtures using delayed jobs.

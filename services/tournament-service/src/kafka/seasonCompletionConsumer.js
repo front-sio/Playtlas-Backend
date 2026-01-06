@@ -3,6 +3,7 @@ const { prisma } = require('../config/db');
 const logger = require('../utils/logger');
 const { subscribeEvents, Topics } = require('../../../../shared/events');
 const { ensureTournamentSchedule } = require('../jobs/schedulerQueue');
+const { emitSeasonUpdate } = require('../utils/socketEmitter');
 
 const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3002';
 
@@ -205,6 +206,12 @@ async function handleSeasonCompleted(payload) {
     { seasonId, tournamentId, platformFee, firstAmount, secondAmount, thirdAmount },
     '[seasonCompletion] Payouts completed'
   );
+
+  await emitSeasonUpdate({
+    tournamentId,
+    seasonId,
+    event: 'season_completed'
+  });
 
   await ensureTournamentSchedule(tournamentId);
 }

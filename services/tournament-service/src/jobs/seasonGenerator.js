@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const { prisma } = require('../config/db');
 const logger = require('../utils/logger');
+const { emitSeasonUpdate } = require('../utils/socketEmitter');
 
 const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 5);
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 1);
@@ -84,6 +85,12 @@ const startSeasonGenerator = () => {
           { seasonId: newSeason.seasonId, tournamentId: tournament.tournamentId },
           '[seasonGenerator] Created new season'
         );
+
+        await emitSeasonUpdate({
+          tournamentId: tournament.tournamentId,
+          seasonId: newSeason.seasonId,
+          event: 'season_created'
+        });
       }
     } catch (error) {
       logger.error('Error in season generator job:', error);

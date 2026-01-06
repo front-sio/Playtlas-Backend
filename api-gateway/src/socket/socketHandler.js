@@ -78,6 +78,11 @@ const setupSocketIO = (io) => {
       io.to(`user:${data.userId}`).emit('notification:new', data.notification);
     });
 
+    socket.on('broadcast:tournament:seasons:update', (data) => {
+      if (!data || !data.tournamentId) return;
+      io.to(`tournament:${data.tournamentId}`).emit('tournament:seasons:update', data);
+    });
+
     socket.on('broadcast:player:stats', (data) => {
       if (!data || !data.userId || !data.stats) return;
       io.to(`user:${data.userId}`).emit('player:stats', data.stats);
