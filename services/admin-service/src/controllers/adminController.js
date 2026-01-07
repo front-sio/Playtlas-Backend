@@ -21,6 +21,7 @@ const GAME_SERVICE_URL = process.env.GAME_SERVICE_URL || 'http://localhost:3003'
 const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003';
 const AGENT_SERVICE_URL = process.env.AGENT_SERVICE_URL || 'http://localhost:3010';
 const TOURNAMENT_SERVICE_URL = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3000';
+const MATCHMAKING_SERVICE_URL = process.env.MATCHMAKING_SERVICE_URL || 'http://localhost:3009';
 
 const getAuthHeaders = (req) => {
   const authHeader = req.headers.authorization;
@@ -425,7 +426,7 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
       }).catch(() => ({ data: {} }))
     ]);
 
-    const usersData = authStats.data?.data || authStats.data;
+    const usersData = authStats.data?.data || authStats.data || {};
     const financialData = walletStats.data?.data || walletStats.data;
     const tournamentData = tournamentStats.data?.data || tournamentStats.data || {};
     const paymentData = paymentStats.data?.data || paymentStats.data || {};
@@ -441,12 +442,22 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     const activeSessionCount = Array.isArray(sessionsData) ? sessionsData.length : 0;
 
     const stats = {
-      users: usersData,
+      users: {
+        totalUsers: Number(usersData.totalUsers || usersData.total || 0),
+        activeUsers: Number(usersData.activeUsers || 0),
+        verifiedUsers: Number(usersData.verifiedUsers || 0),
+        newUsersLast7Days: Number(usersData.newUsersLast7Days || 0)
+      },
       financial: {
         ...(financialData || {}),
         transactionFees,
         platformFees,
         platformRevenue
+      },
+      payments: {
+        ...paymentData,
+        pendingDeposits,
+        pendingCashouts
       },
       tournaments: tournamentData,
       pendingDeposits,
@@ -861,6 +872,74 @@ exports.getTournaments = asyncHandler(async (req, res) => {
     res.status(502).json({ 
       success: false, 
       error: error.message || 'Failed to get tournaments' 
+    });
+  }
+});
+
+exports.getTournamentOverview = asyncHandler(async (req, res) => {
+  const { tournamentId } = req.params;
+
+  try {
+    const [seasonsResponse, matchesResponse] = await Promise.all([
+      axios.get(`${TOURNAMENT_SERVICE_URL}/tournament/${tournamentId}/seasons`, {
+        headers: getAuthHeaders(req),
+        params: { limit: 200, offset: 0 }
+      }),
+      axios
+        .get(`${MATCHMAKING_SERVICE_URL}/matchmaking/tournament/${tournamentId}/matches`, {
+          headers: getAuthHeaders(req)
+        })
+        .catch(() => ({ data: { data: { matches: [] } } }))
+    ]);
+
+    const seasons = seasonsResponse.data?.data || seasonsResponse.data || [];
+    const matchPayload = matchesResponse.data?.data || matchesResponse.data || {};
+    const matches = matchPayload.matches || matchPayload || [];
+
+    const matchStatusCounts = matches.reduce((acc, match) => {
+      const status = match.status || 'unknown';
+      acc[status] = (acc[status] || 0) + 1;
+      return acc;
+    }, {});
+
+    const activeStatuses = new Set(['active', 'in_progress', 'in-progress', 'ready', 'matched', 'scheduled']);
+    const inProgressStatuses = new Set(['active', 'in_progress', 'in-progress', 'ready', 'matched']);
+    const totalMatches = matches.length;
+    const activeMatches = Object.entries(matchStatusCounts)
+      .filter(([status]) => activeStatuses.has(status))
+      .reduce((sum, [, count]) => sum + count, 0);
+    const inProgressMatches = Object.entries(matchStatusCounts)
+      .filter(([status]) => inProgressStatuses.has(status))
+      .reduce((sum, [, count]) => sum + count, 0);
+
+    const matchesBySeason = matches.reduce((acc, match) => {
+      const key = match.seasonId || 'unknown';
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(match);
+      return acc;
+    }, {});
+
+    const seasonsWithMatches = seasons.map((season) => ({
+      ...season,
+      matches: matchesBySeason[season.seasonId] || []
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        seasons: seasonsWithMatches,
+        matches,
+        matchStatusCounts,
+        totalMatches,
+        activeMatches,
+        inProgressMatches
+      }
+    });
+  } catch (error) {
+    logger.error('Failed to get tournament overview:', error.message);
+    res.status(502).json({
+      success: false,
+      error: error.message || 'Failed to load tournament overview'
     });
   }
 });

@@ -300,6 +300,15 @@ router.get('/tournaments',
   adminController.getTournaments
 );
 
+router.get('/tournaments/:tournamentId/overview',
+  authorize('tournaments:read'),
+  [
+    param('tournamentId').isUUID(),
+    handleValidationErrors
+  ],
+  adminController.getTournamentOverview
+);
+
 router.put('/tournaments/:tournamentId',
   authorize('tournaments:update'),
   [

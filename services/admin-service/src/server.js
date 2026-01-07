@@ -9,6 +9,7 @@ const { errorHandler } = require('./middlewares/errorHandler');
 const { startTournamentLifecycleConsumer } = require('./kafka/tournamentLifecycleConsumer');
 const { startTournamentReadModelConsumer } = require('./kafka/tournamentReadModelConsumer');
 const { startTournamentCommandResponseConsumer } = require('./kafka/tournamentCommandClient');
+const { startAdminNotificationConsumer } = require('./kafka/adminNotificationConsumer');
 const { authMiddleware } = require('../../../shared/middlewares/authMiddleware');
 
 const app = express();
@@ -36,6 +37,9 @@ app.listen(PORT, () => {
     logger.error({ err }, '[admin-service] Failed to start tournament read-model consumer');
   });
   startTournamentCommandResponseConsumer();
+  startAdminNotificationConsumer().catch((err) => {
+    logger.error({ err }, '[admin-service] Failed to start admin notification consumer');
+  });
 });
 
 module.exports = app;
