@@ -278,21 +278,7 @@ async function handleTournamentMatchGeneration(data) {
   const options = { tournamentId, seasonId, stage: normalizedStage || undefined, roundNumber: 1, matchDurationSeconds };
   const useGroupStage = normalizedStage === 'group' && uniquePlayers.length >= GROUP_SIZE;
   const effectiveStage = useGroupStage ? 'group' : getInitialStage(uniquePlayers.length);
-  const season = await prisma.season.findUnique({
-    where: { seasonId },
-    select: { startTime: true }
-  });
-  const seasonStartTime = season?.startTime ? new Date(season.startTime) : new Date();
-
-  await prisma.season.update({
-    where: { seasonId },
-    data: {
-      status: 'active',
-      matchesGenerated: true,
-      joiningClosed: true,
-      endTime: estimateSeasonEndTime(seasonStartTime, uniquePlayers.length, useGroupStage, matchDurationSeconds)
-    }
-  });
+  const seasonStartTime = data.startTime ? new Date(data.startTime) : new Date();
 
   const matches = useGroupStage
     ? await createGroupStageMatches(uniquePlayers, { ...options, stage: 'group', seasonStartTime })

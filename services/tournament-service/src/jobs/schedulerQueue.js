@@ -242,7 +242,8 @@ async function triggerSeasonFixtures(seasonId) {
       seasonId: season.seasonId,
       stage: tournamentStage,
       players: activePlayers,
-      matchDurationSeconds: Number(season.tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS)
+      matchDurationSeconds: Number(season.tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS),
+      startTime: season.startTime ? season.startTime.toISOString() : undefined
     },
     season.seasonId
   );
