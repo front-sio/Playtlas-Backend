@@ -108,6 +108,7 @@ exports.getTournamentSeasons = async (req, res) => {
     const { tournamentId } = req.params;
     const userId = req.user?.userId; // Get current user ID from auth middleware
 
+    const now = new Date();
     const tournament = await prisma.tournament.findUnique({
       where: { tournamentId },
       select: { tournamentId: true }
@@ -128,9 +129,17 @@ exports.getTournamentSeasons = async (req, res) => {
     const seasonsWithStatus = seasons.map(season => {
       const playerCount = season.tournamentPlayers.length;
       const hasJoined = userId ? season.tournamentPlayers.some(player => player.playerId === userId) : false;
-      
+      let joiningClosed = season.joiningClosed;
+      if (season.status === 'upcoming' && season.startTime) {
+        const joiningCloseAt = getSeasonJoiningCloseTime(season.startTime);
+        if (now >= joiningCloseAt) {
+          joiningClosed = true;
+        }
+      }
+
       return {
         ...season,
+        joiningClosed,
         playerCount,
         hasJoined
       };

@@ -6,8 +6,8 @@ const { emitSeasonUpdate } = require('../utils/socketEmitter');
 
 const QUEUE_NAME = 'tournament-scheduler';
 
-const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 5);
-const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 1);
+const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 30);
+const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 4);
 const SEASON_SCHEDULE_EVERY_MS = Number(process.env.SEASON_SCHEDULE_EVERY_MS || 5 * 60 * 1000);
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
 
@@ -76,7 +76,7 @@ async function ensureNextSeason(tournamentId) {
     select: { seasonNumber: true, endTime: true, status: true }
   });
 
-  const isLastSeasonFinal = lastSeason?.status === 'completed' || lastSeason?.status === 'finished';
+  const isLastSeasonFinal = ['completed', 'finished', 'cancelled'].includes(lastSeason?.status);
   if (lastSeason && !isLastSeasonFinal && lastSeason.endTime && now <= new Date(lastSeason.endTime)) {
     return null;
   }
@@ -169,6 +169,23 @@ async function closeSeasonJoining(seasonId) {
     data: { joiningClosed: true }
   });
   logger.info({ seasonId }, '[scheduler] Season joining closed');
+
+  const playerCount = await prisma.tournamentPlayer.count({
+    where: { seasonId }
+  });
+  if (playerCount === 0 && season.status === 'upcoming') {
+    await prisma.season.update({
+      where: { seasonId },
+      data: { status: 'cancelled' }
+    });
+    logger.info({ seasonId }, '[scheduler] Season cancelled due to no players');
+    await emitSeasonUpdate({
+      tournamentId: season.tournamentId,
+      seasonId,
+      event: 'season_cancelled'
+    });
+    await ensureNextSeason(season.tournamentId);
+  }
 }
 
 async function triggerSeasonFixtures(seasonId) {
