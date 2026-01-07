@@ -14,6 +14,7 @@ const Topics = {
   PLAYER_JOINED_SEASON: 'tournament.player_joined_season',
   SEASON_FEE_DEBITED: 'wallet.season_fee_debited',
   SEASON_COMPLETED: 'tournament.season_completed',
+  SEASON_CANCELLED: 'tournament.season_cancelled',
   GENERATE_MATCHES: 'tournament.generate_matches',
   MATCH_COMPLETED: 'tournament.match_completed',
   MATCH_RESULT: 'tournament.match_result',

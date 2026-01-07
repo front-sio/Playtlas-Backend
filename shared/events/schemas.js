@@ -43,6 +43,12 @@ function validateSeasonCompleted(payload) {
   return { ok: true, value: payload };
 }
 
+function validateSeasonCancelled(payload) {
+  if (!payload || !isString(payload.tournamentId)) return { ok: false, error: 'tournamentId is required' };
+  if (!isString(payload.seasonId)) return { ok: false, error: 'seasonId is required' };
+  return { ok: true, value: payload };
+}
+
 function validateMatchCompleted(payload) {
   if (!payload || !isString(payload.tournamentId)) return { ok: false, error: 'tournamentId is required' };
   if (!isString(payload.seasonId)) return { ok: false, error: 'seasonId is required' };
@@ -130,6 +136,7 @@ const validatorsByTopic = {
   'wallet.wallet_created': validateWalletCreated,
   'tournament.player_joined_season': validatePlayerJoinedSeason,
   'tournament.season_completed': validateSeasonCompleted,
+  'tournament.season_cancelled': validateSeasonCancelled,
   'tournament.match_completed': validateMatchCompleted,
   'tournament.match_result': validateMatchResult,
   'wallet.prize_credited': validatePrizeCredited,

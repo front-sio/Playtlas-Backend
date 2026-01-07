@@ -11,6 +11,7 @@ const KafkaTopics = {
   TOURNAMENT_STAGE_UPDATED: 'tournament.tournament_stage_updated',
   TOURNAMENT_PLAYER_ADVANCED: 'tournament.player_advanced_stage',
   TOURNAMENT_PRIZE_DISTRIBUTED: 'tournament.prize_distributed',
+  SEASON_CANCELLED: 'tournament.season_cancelled',
 
   GAME_MATCH_COMPLETED: 'game.match_completed',
 

@@ -6,6 +6,7 @@ const tournamentRoutes = require('./routes/tournamentRoutes');
 const logger = require('./utils/logger');
 const { startTournamentCommandConsumer } = require('./kafka/commandConsumer');
 const { startSeasonCompletionConsumer } = require('./kafka/seasonCompletionConsumer');
+const { startSeasonCancellationConsumer } = require('./kafka/seasonCancellationConsumer');
 const { startSchedulerWorker, ensureActiveTournamentSchedules } = require('./jobs/schedulerQueue');
 
 const app = express();
@@ -42,6 +43,10 @@ app.listen(PORT, () => {
   // Kafka consumer for season completion payouts
   startSeasonCompletionConsumer().catch((err) => {
     logger.error({ err }, '[tournament-service] Failed to start season completion consumer');
+  });
+  // Kafka consumer for season cancellation (insufficient players)
+  startSeasonCancellationConsumer().catch((err) => {
+    logger.error({ err }, '[tournament-service] Failed to start season cancellation consumer');
   });
 });
 

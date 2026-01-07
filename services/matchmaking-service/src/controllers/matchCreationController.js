@@ -115,19 +115,19 @@ async function refundSeasonEntryFees({ tournamentId, seasonId, playerIds }) {
 
 async function cancelSeasonForInsufficientPlayers({ tournamentId, seasonId, playerIds }) {
   const now = new Date();
-  if (prisma.season && prisma.season.update) {
-    await prisma.season.update({
-      where: { seasonId },
-      data: {
-        status: 'cancelled',
-        endTime: now,
-        matchesGenerated: false,
-        joiningClosed: true
-      }
-    });
-  } else {
-    logger.warn({ seasonId }, '[cancelSeason] Season model not available in matchmaking DB; skipping season update');
-  }
+  await publishEvent(
+    Topics.SEASON_CANCELLED,
+    {
+      tournamentId,
+      seasonId,
+      reason: 'insufficient_players',
+      playerCount: playerIds.length,
+      cancelledAt: now.toISOString()
+    },
+    seasonId
+  ).catch((err) => {
+    logger.error({ err, seasonId }, '[cancelSeason] Failed to publish SEASON_CANCELLED event');
+  });
 
   await refundSeasonEntryFees({ tournamentId, seasonId, playerIds });
 
@@ -272,7 +272,7 @@ async function handleTournamentMatchGeneration(data) {
 
   const uniquePlayers = Array.from(new Set(players.filter((p) => typeof p === 'string' && p.length > 0)));
   if (uniquePlayers.length < 2) {
-    logger.warn({ tournamentId, seasonId, playerCount: uniquePlayers.length }, 'Not enough players to generate matches');
+    logger.warn('Not enough players to generate matches', { tournamentId, seasonId, playerCount: uniquePlayers.length });
     await cancelSeasonForInsufficientPlayers({ tournamentId, seasonId, playerIds: uniquePlayers });
     return;
   }
