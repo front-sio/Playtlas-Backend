@@ -115,15 +115,19 @@ async function refundSeasonEntryFees({ tournamentId, seasonId, playerIds }) {
 
 async function cancelSeasonForInsufficientPlayers({ tournamentId, seasonId, playerIds }) {
   const now = new Date();
-  await prisma.season.update({
-    where: { seasonId },
-    data: {
-      status: 'cancelled',
-      endTime: now,
-      matchesGenerated: false,
-      joiningClosed: true
-    }
-  });
+  if (prisma.season && prisma.season.update) {
+    await prisma.season.update({
+      where: { seasonId },
+      data: {
+        status: 'cancelled',
+        endTime: now,
+        matchesGenerated: false,
+        joiningClosed: true
+      }
+    });
+  } else {
+    logger.warn({ seasonId }, '[cancelSeason] Season model not available in matchmaking DB; skipping season update');
+  }
 
   await refundSeasonEntryFees({ tournamentId, seasonId, playerIds });
 
