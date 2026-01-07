@@ -76,9 +76,9 @@ function startMatchTimeoutMonitor(io, prisma) {
         take: 200
       });
 
-      const matchDurationSeconds = Number(match?.metadata?.matchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
-      const durationMs = matchDurationSeconds * 1000;
       for (const match of candidates) {
+        const matchDurationSeconds = Number(match?.metadata?.matchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
+        const durationMs = matchDurationSeconds * 1000;
         const baseTime = match.startedAt || match.scheduledTime;
         if (!baseTime) continue;
         const endTime = new Date(baseTime).getTime() + durationMs;
