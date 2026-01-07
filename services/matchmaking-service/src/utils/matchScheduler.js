@@ -1,5 +1,8 @@
 const MATCH_READY_TIMEOUT = 120; // 2 minutes
 const QUEUE_TIMEOUT = 300; // 5 minutes
+let queueProcessing = false;
+let readyProcessing = false;
+let timeoutProcessing = false;
 
 exports.startMatchScheduler = function(io, prisma) {
   if (!prisma?.matchQueue || !prisma?.match) {
@@ -8,11 +11,19 @@ exports.startMatchScheduler = function(io, prisma) {
   }
   // Check for players in queue and create matches
   setInterval(async () => {
-    await processMatchQueue(io, prisma);
+    if (queueProcessing) return;
+    queueProcessing = true;
+    try {
+      await processMatchQueue(io, prisma);
+    } finally {
+      queueProcessing = false;
+    }
   }, 5000); // Check every 5 seconds
 
   // Check for ready matches that haven't started
   setInterval(async () => {
+    if (readyProcessing) return;
+    readyProcessing = true;
     try {
       const timeout = new Date(Date.now() - (MATCH_READY_TIMEOUT * 1000));
       
@@ -48,11 +59,15 @@ exports.startMatchScheduler = function(io, prisma) {
       }
     } catch (error) {
       console.error('Match scheduler error:', error);
+    } finally {
+      readyProcessing = false;
     }
   }, 30000); // Check every 30 seconds
 
   // Check for queue timeouts
   setInterval(async () => {
+    if (timeoutProcessing) return;
+    timeoutProcessing = true;
     try {
       const timeout = new Date(Date.now() - (QUEUE_TIMEOUT * 1000));
       
@@ -79,6 +94,8 @@ exports.startMatchScheduler = function(io, prisma) {
       }
     } catch (error) {
       console.error('Queue timeout checker error:', error);
+    } finally {
+      timeoutProcessing = false;
     }
   }, 60000); // Check every minute
 

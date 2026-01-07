@@ -2,6 +2,7 @@ const { completeMatchAndProgress } = require('../controllers/matchmakingControll
 
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
 const MATCH_TIMEOUT_CHECK_INTERVAL = Number(process.env.MATCH_TIMEOUT_CHECK_INTERVAL || 15000);
+let timeoutScanInFlight = false;
 
 function buildCancelMetadata(reason, winnerId) {
   return {
@@ -66,6 +67,8 @@ function startMatchTimeoutMonitor(io, prisma) {
   }
 
   setInterval(async () => {
+    if (timeoutScanInFlight) return;
+    timeoutScanInFlight = true;
     try {
       const now = Date.now();
       const candidates = await prisma.match.findMany({
@@ -103,6 +106,8 @@ function startMatchTimeoutMonitor(io, prisma) {
       }
     } catch (error) {
       console.error('[matchTimeouts] Monitor error:', error);
+    } finally {
+      timeoutScanInFlight = false;
     }
   }, MATCH_TIMEOUT_CHECK_INTERVAL);
 

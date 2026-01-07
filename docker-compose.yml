@@ -60,6 +60,7 @@ services:
       done;
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server pool-game-kafka:9092 --create --if-not-exists --topic tournament.generate_matches --partitions 3 --replication-factor 1;
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server pool-game-kafka:9092 --create --if-not-exists --topic tournament.season_completed --partitions 3 --replication-factor 1;
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server pool-game-kafka:9092 --create --if-not-exists --topic tournament.season_cancelled --partitions 3 --replication-factor 1;
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server pool-game-kafka:9092 --create --if-not-exists --topic tournament.match_result --partitions 3 --replication-factor 1;"
     restart: "no"
     networks:

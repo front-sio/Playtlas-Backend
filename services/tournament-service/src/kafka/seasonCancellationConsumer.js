@@ -34,7 +34,7 @@ async function handleSeasonCancelled(payload) {
 }
 
 async function startSeasonCancellationConsumer() {
-  await subscribeEvents('tournament-service', [Topics.SEASON_CANCELLED], async (_topic, payload) => {
+  await subscribeEvents('tournament-service-season-cancel', [Topics.SEASON_CANCELLED], async (_topic, payload) => {
     try {
       await handleSeasonCancelled(payload);
     } catch (err) {
