@@ -205,22 +205,44 @@ async function triggerSeasonFixtures(seasonId) {
     .filter((p) => p.status !== 'eliminated')
     .map((p) => p.playerId);
 
+  const tournamentStage =
+    season.tournament.stage && season.tournament.stage !== 'registration'
+      ? season.tournament.stage
+      : 'group';
+  const matchDurationSeconds = Number(season.tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS);
+  const seasonStartTime = season.startTime ? season.startTime.toISOString() : undefined;
+
   if (activePlayers.length < 2) {
+    const now = new Date();
     await prisma.season.update({
       where: { seasonId },
-      data: { status: 'finished', matchesGenerated: true }
+      data: {
+        status: 'cancelled',
+        matchesGenerated: true,
+        joiningClosed: true,
+        endTime: now
+      }
     });
-    logger.info({ seasonId }, '[scheduler] Season finished due to insufficient players');
+    logger.info({ seasonId, playerCount: activePlayers.length }, '[scheduler] Season cancelled due to insufficient players');
+    await emitSeasonUpdate({
+      tournamentId: season.tournament.tournamentId,
+      seasonId,
+      event: 'season_cancelled'
+    });
     await publishEvent(
-      Topics.SEASON_COMPLETED,
+      Topics.GENERATE_MATCHES,
       {
         tournamentId: season.tournament.tournamentId,
         seasonId,
-        status: 'finished',
-        endedAt: new Date().toISOString()
+        stage: tournamentStage,
+        players: activePlayers,
+        matchDurationSeconds,
+        startTime: seasonStartTime
       },
-      seasonId
-    );
+      season.seasonId
+    ).catch((err) => {
+      logger.error({ err, seasonId }, '[scheduler] Failed to publish GENERATE_MATCHES for refund');
+    });
     return;
   }
 
@@ -230,11 +252,6 @@ async function triggerSeasonFixtures(seasonId) {
     data: { status: 'active', matchesGenerated: true }
   });
 
-  const tournamentStage =
-    season.tournament.stage && season.tournament.stage !== 'registration'
-      ? season.tournament.stage
-      : 'group';
-
   await publishEvent(
     Topics.GENERATE_MATCHES,
     {
@@ -242,8 +259,8 @@ async function triggerSeasonFixtures(seasonId) {
       seasonId: season.seasonId,
       stage: tournamentStage,
       players: activePlayers,
-      matchDurationSeconds: Number(season.tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS),
-      startTime: season.startTime ? season.startTime.toISOString() : undefined
+      matchDurationSeconds,
+      startTime: seasonStartTime
     },
     season.seasonId
   );

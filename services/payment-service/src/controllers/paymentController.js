@@ -741,7 +741,10 @@ exports.getAdminStats = async (req, res) => {
   try {
     if (!ensureAdmin(req, res)) return;
 
-    const [pendingDeposits, pendingWithdrawals, depositFees, withdrawalFees] = await Promise.all([
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const [pendingDeposits, pendingWithdrawals, depositFees, withdrawalFees, totalDeposits, totalWithdrawals, completedDeposits, completedWithdrawals, failedDeposits, failedWithdrawals, completedDepositTotals, completedWithdrawalTotals, todayDepositTotals, todayWithdrawalTotals] = await Promise.all([
       prisma.deposit.count({ where: { status: 'pending_approval' } }),
       prisma.withdrawal.count({ where: { status: { in: ['pending', 'pending_approval'] } } }),
       prisma.deposit.aggregate({
@@ -751,11 +754,37 @@ exports.getAdminStats = async (req, res) => {
       prisma.withdrawal.aggregate({
         where: { status: { in: ['processing', 'completed', 'approved'] } },
         _sum: { fee: true }
+      }),
+      prisma.deposit.count(),
+      prisma.withdrawal.count(),
+      prisma.deposit.count({ where: { status: 'completed' } }),
+      prisma.withdrawal.count({ where: { status: { in: ['processing', 'completed', 'approved'] } } }),
+      prisma.deposit.count({ where: { status: 'failed' } }),
+      prisma.withdrawal.count({ where: { status: { in: ['failed', 'cancelled', 'rejected'] } } }),
+      prisma.deposit.aggregate({
+        where: { status: 'completed' },
+        _sum: { amount: true }
+      }),
+      prisma.withdrawal.aggregate({
+        where: { status: { in: ['processing', 'completed', 'approved'] } },
+        _sum: { amount: true }
+      }),
+      prisma.deposit.aggregate({
+        where: { status: 'completed', createdAt: { gte: todayStart } },
+        _sum: { amount: true }
+      }),
+      prisma.withdrawal.aggregate({
+        where: { status: { in: ['processing', 'completed', 'approved'] }, createdAt: { gte: todayStart } },
+        _sum: { amount: true }
       })
     ]);
 
     const depositFeeTotal = Number(depositFees?._sum?.fee || 0);
     const withdrawalFeeTotal = Number(withdrawalFees?._sum?.fee || 0);
+    const completedDepositAmount = Number(completedDepositTotals?._sum?.amount || 0);
+    const completedWithdrawalAmount = Number(completedWithdrawalTotals?._sum?.amount || 0);
+    const todayDepositAmount = Number(todayDepositTotals?._sum?.amount || 0);
+    const todayWithdrawalAmount = Number(todayWithdrawalTotals?._sum?.amount || 0);
 
     res.json({
       success: true,
@@ -764,7 +793,17 @@ exports.getAdminStats = async (req, res) => {
         pendingCashouts: pendingWithdrawals,
         transactionFees: depositFeeTotal + withdrawalFeeTotal,
         depositFeeTotal,
-        withdrawalFeeTotal
+        withdrawalFeeTotal,
+        totalDeposits,
+        totalCashouts: totalWithdrawals,
+        completedDeposits,
+        completedCashouts: completedWithdrawals,
+        failedDeposits,
+        failedCashouts: failedWithdrawals,
+        completedDepositAmount,
+        completedCashoutAmount: completedWithdrawalAmount,
+        todayDepositAmount,
+        todayCashoutAmount: todayWithdrawalAmount
       }
     });
   } catch (error) {
