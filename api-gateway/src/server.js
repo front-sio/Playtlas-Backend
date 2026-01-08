@@ -41,8 +41,11 @@ const resolveCorsOrigin = (origin, callback) => {
   return callback(new Error('Not allowed by CORS'));
 };
 
+const socketPath = process.env.SOCKET_IO_PATH || '/socket.io';
+
 // Socket.IO setup
 const io = new Server(server, {
+  path: socketPath,
   cors: {
     origin: process.env.SOCKET_CORS_ORIGIN || resolveCorsOrigin,
     methods: ['GET', 'POST']
@@ -135,7 +138,7 @@ app.post('/api/lookup/matches', express.json(), async (req, res) => {
 setupSocketIO(io);
 
 // Setup API Gateway Proxy (Must be before body parsers)
-setupProxy(app);
+setupProxy(app, server);
 
 // Body parsers (only for non-proxied routes)
 app.use(express.json());

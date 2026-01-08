@@ -12,7 +12,42 @@ try {
   }
 }
 
-const setupProxy = (app) => {
+const setupProxy = (app, server) => {
+  const socketTargets = {
+    game: process.env.GAME_SERVICE_URL,
+    matchmaking: process.env.MATCHMAKING_SERVICE_URL
+  };
+
+  const socketProxyOptions = (target) => ({
+    target,
+    changeOrigin: true,
+    ws: true,
+    pathRewrite: (path) => path.replace(/^\/socket\.io\/(game|matchmaking)/, '/socket.io'),
+    onError: (err, req, res) => {
+      logger.error('Socket.IO Proxy Error:', err);
+      if (!res.headersSent) {
+        res.writeHead(502);
+      }
+      res.end('Socket.IO proxy error');
+    }
+  });
+
+  if (socketTargets.game) {
+    const gameSocketProxy = createProxyMiddleware('/socket.io/game', socketProxyOptions(socketTargets.game));
+    app.use(gameSocketProxy);
+    if (server) {
+      server.on('upgrade', gameSocketProxy.upgrade);
+    }
+  }
+
+  if (socketTargets.matchmaking) {
+    const matchmakingSocketProxy = createProxyMiddleware('/socket.io/matchmaking', socketProxyOptions(socketTargets.matchmaking));
+    app.use(matchmakingSocketProxy);
+    if (server) {
+      server.on('upgrade', matchmakingSocketProxy.upgrade);
+    }
+  }
+
   // Auth Service
   app.use('/api/auth', createProxyMiddleware({
     target: process.env.AUTH_SERVICE_URL,
