@@ -146,7 +146,7 @@ async function handleSeasonCompleted(payload) {
   const playerCount = season.tournamentPlayers.length;
   const entryFee = Number(season.tournament.entryFee || 0);
   
-  // For with_ai: potAmount = entryFee × 2 (human + AI)
+  // For with_ai: potAmount = entryFee × 2 (human + AI) - assumes exactly 2 participants per season
   // For normal: potAmount = entryFee × playerCount
   const potAmount = normalizeMoney(isWithAi ? entryFee * 2 : entryFee * playerCount);
   

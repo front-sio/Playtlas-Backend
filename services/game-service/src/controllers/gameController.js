@@ -4,6 +4,8 @@ const logger = require('../utils/logger');
 const { QueueNames } = require('../../../../shared/constants/queueNames');
 const { createQueue, defaultJobOptions } = require('../../../../shared/config/redis');
 
+const AI_PLAYER_ID = process.env.AI_PLAYER_ID || '04a942ce-af5f-4bde-9068-b9e2ee295fbf';
+
 let cleanupQueue;
 
 function getCleanupQueue() {
@@ -125,7 +127,6 @@ exports.createSession = async (req, res) => {
     }
 
     // Detect AI game automatically
-    const AI_PLAYER_ID = process.env.AI_PLAYER_ID || '04a942ce-af5f-4bde-9068-b9e2ee295fbf';
     const isAiGame = player1Id === AI_PLAYER_ID || player2Id === AI_PLAYER_ID;
     
     // Enhanced metadata handling for realtime sessions
