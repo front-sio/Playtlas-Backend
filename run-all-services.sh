@@ -21,6 +21,7 @@ SERVICES=(
   "services/payment-service"
   "services/player-service"
   "services/tournament-service"
+  "services/revenue-analytics-service"
   "services/wallet-service"
 )
 

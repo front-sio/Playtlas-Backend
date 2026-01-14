@@ -4,6 +4,14 @@ const { subscribeEvents, publishEvent, Topics } = require('../../../../shared/ev
 const { ensureTournamentSchedule, startSchedulerWorker, scheduleTournamentStart, cancelTournamentSchedule } = require('../jobs/schedulerQueue');
 
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
+
+function normalizeGameType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'with_ai' || normalized === 'withai' || normalized === 'ai') {
+    return 'with_ai';
+  }
+  return 'multiplayer';
+}
 function buildTournamentMetadata(existing, actor) {
   const base = existing && typeof existing === 'object' ? { ...existing } : {};
   if (actor) {
@@ -71,25 +79,33 @@ async function publishCommandResult(commandId, action, status, data, error) {
 }
 
 async function handleCreate(commandId, data, actor) {
-  const { name, description, entryFee, maxPlayers, matchDuration, seasonDuration, startTime } = data;
+  const { name, description, entryFee, maxPlayers, matchDuration, seasonDuration, startTime, gameType, aiDifficulty } = data;
   if (!name || entryFee === undefined) {
     throw new Error('name and entryFee are required');
   }
 
   const parsedStartTime = startTime ? new Date(startTime) : new Date(Date.now() + 3600000);
+  const normalizedGameType = normalizeGameType(gameType);
+  const effectiveMaxPlayers = normalizedGameType === 'with_ai' ? 2 : maxPlayers;
+  const rawAiDifficulty = aiDifficulty ? Number(aiDifficulty) : null;
+  const normalizedAiDifficulty = rawAiDifficulty ? Math.max(1, Math.min(100, rawAiDifficulty)) : null;
 
   const tournament = await prisma.tournament.create({
     data: {
       name,
       description: description || null,
       entryFee,
-      maxPlayers: maxPlayers || undefined,
+      maxPlayers: effectiveMaxPlayers || undefined,
       matchDuration: matchDuration || seasonDuration || DEFAULT_MATCH_DURATION_SECONDS,
       competitionWalletId: null,
       startTime: parsedStartTime,
       status: 'upcoming',
       stage: 'registration',
-      metadata: buildTournamentMetadata(undefined, actor)
+      metadata: {
+        ...buildTournamentMetadata(undefined, actor),
+        gameType: normalizedGameType,
+        aiDifficulty: normalizedAiDifficulty
+      }
     }
   });
 

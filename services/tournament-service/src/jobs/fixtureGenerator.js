@@ -6,6 +6,7 @@ const { emitSeasonUpdate } = require('../utils/socketEmitter');
 
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 4);
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
+const AI_PLAYER_ID = process.env.AI_PLAYER_ID || null;
 
 const startFixtureGenerator = () => {
   // Run every minute
@@ -46,7 +47,7 @@ const startFixtureGenerator = () => {
         if (!season.matchesGenerated && now >= fixtureTime) {
           const tournament = await prisma.tournament.findUnique({
             where: { tournamentId: season.tournamentId },
-            select: { tournamentId: true, status: true, stage: true, matchDuration: true }
+            select: { tournamentId: true, status: true, stage: true, matchDuration: true, metadata: true }
           });
           if (!tournament || tournament.status !== 'active') {
             continue;
@@ -63,6 +64,9 @@ const startFixtureGenerator = () => {
               : 'group';
           const matchDurationSeconds = Number(tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS);
           const seasonStartTime = season.startTime ? season.startTime.toISOString() : undefined;
+          const gameType = tournament?.metadata?.gameType || 'multiplayer';
+          const aiDifficulty = tournament?.metadata?.aiDifficulty ?? null;
+          const aiPlayerId = gameType === 'with_ai' ? AI_PLAYER_ID : null;
 
           if (activePlayers.length < 2) {
             const nowTime = new Date();
@@ -90,7 +94,10 @@ const startFixtureGenerator = () => {
               stage: tournamentStage,
               players: activePlayers,
               matchDurationSeconds,
-              startTime: seasonStartTime
+              startTime: seasonStartTime,
+              gameType,
+              aiDifficulty,
+              aiPlayerId
             }).catch((eventErr) => {
               logger.error(
                 { err: eventErr, seasonId: season.seasonId },
@@ -113,7 +120,10 @@ const startFixtureGenerator = () => {
               stage: tournamentStage,
               players: activePlayers,
               matchDurationSeconds,
-              startTime: seasonStartTime
+              startTime: seasonStartTime,
+              gameType,
+              aiDifficulty,
+              aiPlayerId
             });
             logger.info(
               { seasonId: season.seasonId, tournamentId: season.tournamentId },

@@ -248,6 +248,150 @@ exports.transferFunds = async (req, res) => {
   }
 };
 
+exports.internalTransfer = async (req, res) => {
+  try {
+    const {
+      fromWalletId,
+      toWalletId,
+      amount,
+      description,
+      metadata,
+      fromUserId,
+      toUserId,
+      referenceNumber,
+      idempotencyKey
+    } = req.body;
+
+    if (!fromWalletId || !toWalletId || !amount) {
+      return res.status(400).json({ success: false, error: 'Missing required fields' });
+    }
+
+    if (fromWalletId === toWalletId) {
+      return res.status(400).json({ success: false, error: 'Cannot transfer to the same wallet' });
+    }
+
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ success: false, error: 'Invalid amount' });
+    }
+
+    const effectiveReference =
+      referenceNumber ||
+      (idempotencyKey ? `INTERNAL-${idempotencyKey}` : `INTXFR${Date.now()}${Math.random().toString(36).slice(2, 7).toUpperCase()}`);
+
+    try {
+      await axios.post(
+        `${WALLET_SERVICE_URL}/transfer`,
+        {
+          fromWalletId,
+          toWalletId,
+          amount: parsedAmount,
+          description: description || 'Internal transfer',
+          metadata,
+          idempotencyKey
+        },
+        {
+          headers: {
+            'Authorization': req.headers.authorization,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      let walletTransfer = null;
+      if (hasModel(prisma.walletTransfer)) {
+        walletTransfer = await prisma.walletTransfer.create({
+          data: {
+            fromUserId: fromUserId || req.user?.userId || null,
+            fromWalletId,
+            toUserId: toUserId || null,
+            toWalletId,
+            amount: parsedAmount,
+            fee: 0,
+            currency: 'TZS',
+            description,
+            referenceNumber: effectiveReference,
+            status: 'completed',
+            processedAt: new Date(),
+            metadata: {
+              ...(metadata || {}),
+              idempotencyKey: idempotencyKey || null,
+              source: 'internal'
+            }
+          }
+        });
+      } else {
+        logger.warn('walletTransfer model not available; transfer will not be recorded in payment DB');
+      }
+
+      logger.info({
+        fromWalletId,
+        toWalletId,
+        amount: parsedAmount,
+        referenceNumber: effectiveReference
+      }, 'Internal wallet transfer completed');
+
+      res.json({
+        success: true,
+        data: {
+          transferId: walletTransfer?.transferId || effectiveReference,
+          referenceNumber: effectiveReference,
+          amount: parsedAmount,
+          fee: 0,
+          status: 'completed'
+        }
+      });
+    } catch (walletError) {
+      logger.error('Internal wallet transfer failed:', {
+        message: walletError?.message,
+        status: walletError?.response?.status,
+        data: walletError?.response?.data,
+      });
+
+      if (hasModel(prisma.walletTransfer)) {
+        await prisma.walletTransfer.create({
+          data: {
+            fromUserId: fromUserId || req.user?.userId || null,
+            fromWalletId,
+            toUserId: toUserId || null,
+            toWalletId,
+            amount: parsedAmount,
+            fee: 0,
+            currency: 'TZS',
+            description,
+            referenceNumber: effectiveReference,
+            status: 'failed',
+            failureReason: walletError.response?.data?.error || walletError.message,
+            processedAt: new Date(),
+            metadata: {
+              ...(metadata || {}),
+              idempotencyKey: idempotencyKey || null,
+              source: 'internal'
+            }
+          }
+        });
+      } else {
+        logger.warn('walletTransfer model not available; failed transfer not recorded in payment DB');
+      }
+
+      const walletErrorMessage =
+        walletError?.response?.data?.error ||
+        walletError?.response?.data?.message ||
+        walletError?.message ||
+        'Failed to transfer funds';
+
+      return res.status(400).json({
+        success: false,
+        error: walletErrorMessage
+      });
+    }
+  } catch (error) {
+    logger.error('Internal transfer error:', error);
+    res.status(500).json({ success: false, error: 'Failed to process transfer' });
+  }
+};
+
 exports.getTransfers = async (req, res) => {
   try {
     const userId = req.user?.userId || req.query.userId;

@@ -9,7 +9,13 @@ function getSocket() {
   }
 
   const API_GATEWAY_URL = process.env.API_GATEWAY_URL || 'http://localhost:8080';
-  const API_GATEWAY_SOCKET_PATH = process.env.API_GATEWAY_SOCKET_PATH || '/socket.io/gateway';
+  const API_GATEWAY_SOCKET_PATH = process.env.API_GATEWAY_SOCKET_PATH || '/socket.io';
+  const socketToken = process.env.API_GATEWAY_SOCKET_TOKEN || process.env.SERVICE_SOCKET_TOKEN;
+
+  if (!socketToken) {
+    logger.warn('Admin service Socket.IO token missing; set API_GATEWAY_SOCKET_TOKEN to emit realtime updates');
+    return null;
+  }
   
   socket = io(API_GATEWAY_URL, {
     path: API_GATEWAY_SOCKET_PATH,
@@ -17,7 +23,8 @@ function getSocket() {
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionAttempts: 5,
-    transports: ['websocket', 'polling']
+    transports: ['websocket', 'polling'],
+    auth: { token: socketToken }
   });
 
   socket.on('connect', () => {

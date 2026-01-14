@@ -7,20 +7,47 @@ const connectedUsers = new Map();
 const setupSocketIO = (io) => {
   // Authentication middleware for Socket.IO
   io.use((socket, next) => {
-    const token = socket.handshake.auth.token;
-    
+    const rawToken = socket.handshake.auth.token || socket.handshake.headers.authorization;
+    const token = rawToken && rawToken.startsWith('Bearer ') ? rawToken.slice(7) : rawToken;
+
+    // In development, prefer the provided token so downstream services can authorize.
+    if (process.env.NODE_ENV === 'development') {
+      if (token) {
+        try {
+          const decoded = jwt.verify(token, process.env.JWT_SECRET);
+          socket.userId = decoded.userId;
+          socket.userRole = decoded.role;
+          socket.authToken = token;
+          return next();
+        } catch (err) {
+          console.log(`Socket dev auth failed, falling back: ${err.message}`);
+        }
+      }
+
+      console.log('Development mode: bypassing socket authentication');
+      socket.userId = 'dev-user-123';
+      socket.userRole = 'player';
+      socket.authToken = 'dev-token';
+      return next();
+    }
+
     if (!token) {
-      return next(new Error('Authentication error'));
+      console.log('Socket connection rejected: No token provided');
+      return next(new Error('Authentication error: No token provided'));
     }
 
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
       socket.userId = decoded.userId;
       socket.userRole = decoded.role;
       socket.authToken = token;
+      
+      console.log(`Socket authentication successful for user: ${socket.userId}`);
       next();
     } catch (err) {
-      next(new Error('Authentication error'));
+      console.log(`Socket authentication failed: ${err.message}`);
+      next(new Error('Authentication error: Invalid token'));
     }
   });
 
@@ -32,11 +59,32 @@ const setupSocketIO = (io) => {
 
     // Join user to their personal room
     socket.join(`user:${socket.userId}`);
+    
+    // Send connection confirmation
+    socket.emit('connection:confirmed', { 
+      userId: socket.userId, 
+      socketId: socket.id,
+      timestamp: new Date().toISOString()
+    });
+
+    // Handle user room joins for notifications
+    socket.on('join:user', (userId) => {
+      if (!userId) return;
+      socket.join(`user:${userId}`);
+      socket.userId = userId;
+      logger.info(`User ${userId} joined their notification room`);
+    });
 
     // Handle tournament room joins
     socket.on('join:tournament', (tournamentId) => {
       socket.join(`tournament:${tournamentId}`);
       logger.info(`User ${socket.userId} joined tournament ${tournamentId}`);
+    });
+
+    // Handle match room joins
+    socket.on('join:match', (matchId) => {
+      socket.join(`match:${matchId}`);
+      logger.info(`User ${socket.userId} joined match ${matchId}`);
     });
 
     // Handle chat messages
@@ -198,8 +246,8 @@ const setupSocketIO = (io) => {
     });
 
     // Disconnect handling
-    socket.on('disconnect', () => {
-      logger.info(`User disconnected: ${socket.userId}`);
+    socket.on('disconnect', (reason) => {
+      logger.info(`User disconnected: ${socket.userId} (${socket.id}) - Reason: ${reason}`);
       connectedUsers.delete(socket.userId);
     });
   });

@@ -44,6 +44,7 @@ router.post('/tournament-fees/:feeId/refund', authMiddleware, tournamentFeeContr
 
 // Wallet transfer endpoints
 router.post('/transfer', authMiddleware, transferController.transferFunds);
+router.post('/internal-transfer', authMiddleware, transferController.internalTransfer);
 router.get('/transfers', authMiddleware, transferController.getTransfers);
 router.get('/transfers/:transferId', authMiddleware, transferController.getTransfer);
 

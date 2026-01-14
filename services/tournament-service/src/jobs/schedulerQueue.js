@@ -1,5 +1,7 @@
 const logger = require('../utils/logger');
 const { prisma } = require('../config/db');
+const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const { createQueue, createWorker, defaultJobOptions } = require('../../../../shared/config/redis');
 const { publishEvent, Topics } = require('../../../../shared/events');
 const { emitSeasonUpdate } = require('../utils/socketEmitter');
@@ -10,9 +12,38 @@ const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 30)
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 4);
 const SEASON_SCHEDULE_EVERY_MS = Number(process.env.SEASON_SCHEDULE_EVERY_MS || 5 * 60 * 1000);
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
+const WITH_AI_SEASON_BUFFER = Number(process.env.WITH_AI_SEASON_BUFFER || 10);
+const WITH_AI_INTERVAL_MINUTES = Number(process.env.WITH_AI_SEASON_INTERVAL_MINUTES || 1);
+const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3002';
+const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003';
+const SERVICE_JWT_TOKEN = process.env.SERVICE_JWT_TOKEN || process.env.PAYMENT_SERVICE_TOKEN || null;
+const AI_PLAYER_ID = process.env.AI_PLAYER_ID;
+const AI_WALLET_OWNER_ID = process.env.AI_WALLET_OWNER_ID || AI_PLAYER_ID;
+const AI_WALLET_TYPE = process.env.AI_WALLET_TYPE || 'ai';
 
 let queue;
 let worker;
+let cachedServiceToken = null;
+let cachedServiceTokenExpiry = 0;
+
+function getServiceToken() {
+  if (SERVICE_JWT_TOKEN) return SERVICE_JWT_TOKEN;
+  const now = Date.now();
+  if (cachedServiceToken && now < cachedServiceTokenExpiry) {
+    return cachedServiceToken;
+  }
+  const secret = process.env.JWT_SECRET;
+  if (!secret) return null;
+  try {
+    const token = jwt.sign({ userId: 'system', role: 'service' }, secret, { expiresIn: '5m' });
+    cachedServiceToken = token;
+    cachedServiceTokenExpiry = now + 4 * 60 * 1000;
+    return token;
+  } catch (err) {
+    logger.error({ err }, '[scheduler] Failed to create service token');
+    return null;
+  }
+}
 
 function getQueue() {
   if (!queue) {
@@ -40,58 +71,20 @@ function formatSeasonName(tournamentName, startTime) {
   return `${tournamentName} ${stamp}`;
 }
 
-
-
-async function ensureNextSeason(tournamentId) {
-  const tournament = await prisma.tournament.findUnique({
-    where: { tournamentId },
-    select: {
-      tournamentId: true,
-      status: true,
-      matchDuration: true,
-      stage: true,
-      name: true
-    }
-  });
-  if (!tournament || tournament.status !== 'active') {
-    return null;
+function normalizeGameType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'with_ai' || normalized === 'withai' || normalized === 'ai') {
+    return 'with_ai';
   }
+  return 'multiplayer';
+}
 
-  const now = new Date();
-  const existingUpcoming = await prisma.season.findFirst({
-    where: {
-      tournamentId,
-      status: 'upcoming',
-      startTime: { gt: now }
-    },
-    select: { seasonId: true }
-  });
-  if (existingUpcoming) {
-    return null;
-  }
-
-  const lastSeason = await prisma.season.findFirst({
-    where: { tournamentId },
-    orderBy: { seasonNumber: 'desc' },
-    select: { seasonNumber: true, endTime: true, status: true }
-  });
-
-  const isLastSeasonFinal = ['completed', 'finished', 'cancelled'].includes(lastSeason?.status);
-  if (lastSeason && !isLastSeasonFinal && lastSeason.endTime && now <= new Date(lastSeason.endTime)) {
-    return null;
-  }
-
-  const nextSeasonNumber = lastSeason ? lastSeason.seasonNumber + 1 : 1;
-  const anchorTime = lastSeason?.endTime && !isLastSeasonFinal
-    ? new Date(lastSeason.endTime)
-    : new Date(now.getTime() + (JOIN_WINDOW_MINUTES + FIXTURE_DELAY_MINUTES) * 60 * 1000);
-  const matchDurationSeconds = Number(tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS);
-  const { fixtureTime, joiningCloseAt, endTime } = computeTimes(anchorTime, matchDurationSeconds);
-
+async function createSeasonAndSchedule({ tournament, seasonNumber, startTime, matchDurationSeconds }) {
+  const { fixtureTime, joiningCloseAt, endTime } = computeTimes(startTime, matchDurationSeconds);
   const season = await prisma.season.create({
     data: {
-      tournamentId,
-      seasonNumber: nextSeasonNumber,
+      tournamentId: tournament.tournamentId,
+      seasonNumber,
       name: formatSeasonName(tournament.name, fixtureTime),
       status: 'upcoming',
       joiningClosed: false,
@@ -101,13 +94,16 @@ async function ensureNextSeason(tournamentId) {
     }
   });
 
+  await ensureAiParticipant({ tournament, season }).catch((err) => {
+    logger.error({ err, seasonId: season.seasonId }, '[scheduler] Failed to register AI for season');
+  });
+
   await emitSeasonUpdate({
-    tournamentId,
+    tournamentId: tournament.tournamentId,
     seasonId: season.seasonId,
     event: 'season_created'
   });
 
-  // Close joining and trigger fixtures using delayed jobs.
   const q = getQueue();
   await q.add(
     'close-season-joining',
@@ -140,11 +136,219 @@ async function ensureNextSeason(tournamentId) {
   );
 
   logger.info(
-    { tournamentId, seasonId: season.seasonId, joiningCloseAt, fixtureTime },
+    { tournamentId: tournament.tournamentId, seasonId: season.seasonId, joiningCloseAt, fixtureTime },
     '[scheduler] Season created and jobs scheduled'
   );
 
   return season;
+}
+
+async function fetchAiWallet() {
+  if (!AI_WALLET_OWNER_ID) return null;
+  try {
+    const response = await axios.get(
+      `${WALLET_SERVICE_URL}/owner/${encodeURIComponent(AI_WALLET_OWNER_ID)}?type=${encodeURIComponent(AI_WALLET_TYPE)}`,
+      { timeout: 10000 }
+    );
+    return response.data?.data || null;
+  } catch (err) {
+    if (err.response?.status !== 404) {
+      throw err;
+    }
+  }
+
+  try {
+    const response = await axios.get(
+      `${WALLET_SERVICE_URL}/owner/${encodeURIComponent(AI_WALLET_OWNER_ID)}?type=player`,
+      { timeout: 10000 }
+    );
+    return response.data?.data || null;
+  } catch (err) {
+    if (err.response?.status !== 404) {
+      throw err;
+    }
+  }
+
+  const createResponse = await axios.post(
+    `${WALLET_SERVICE_URL}/create`,
+    { userId: AI_WALLET_OWNER_ID, type: AI_WALLET_TYPE },
+    { timeout: 10000 }
+  );
+  return createResponse.data?.data || null;
+}
+
+async function ensureAiParticipant({ tournament, season }) {
+  const gameType = normalizeGameType(tournament?.metadata?.gameType);
+  if (gameType !== 'with_ai') return;
+  if (!AI_PLAYER_ID) {
+    logger.warn({ tournamentId: tournament.tournamentId }, '[scheduler] AI player ID not configured');
+    return;
+  }
+
+  const existing = await prisma.tournamentPlayer.findFirst({
+    where: { seasonId: season.seasonId, playerId: AI_PLAYER_ID }
+  });
+  if (existing) return;
+
+  let wallet;
+  try {
+    wallet = await fetchAiWallet();
+  } catch (err) {
+    logger.error(
+      {
+        seasonId: season.seasonId,
+        message: err?.message,
+        status: err?.response?.status,
+        data: err?.response?.data
+      },
+      '[scheduler] Failed to fetch AI wallet'
+    );
+    return;
+  }
+
+  if (!wallet?.walletId) {
+    logger.warn({ seasonId: season.seasonId }, '[scheduler] AI wallet missing; skipping auto-join');
+    return;
+  }
+
+  const entryFee = Number(tournament.entryFee || 0);
+  if (entryFee > 0) {
+    const serviceToken = getServiceToken();
+    if (!serviceToken) {
+      logger.error({ seasonId: season.seasonId }, '[scheduler] SERVICE_JWT_TOKEN missing; cannot pay AI entry fee via payment-service');
+      return;
+    }
+    try {
+      await axios.post(
+        `${PAYMENT_SERVICE_URL}/tournament-fee`,
+        {
+          playerWalletId: wallet.walletId,
+          amount: entryFee,
+          tournamentId: tournament.tournamentId,
+          seasonId: season.seasonId,
+          userId: AI_PLAYER_ID
+        },
+        {
+          timeout: 10000,
+          headers: {
+            Authorization: `Bearer ${serviceToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+    } catch (err) {
+      logger.error(
+        {
+          seasonId: season.seasonId,
+          message: err?.message,
+          status: err?.response?.status,
+          data: err?.response?.data
+        },
+        '[scheduler] AI fee payment failed (payment-service)'
+      );
+      return;
+    }
+  }
+
+  await prisma.tournamentPlayer.create({
+    data: {
+      tournamentId: tournament.tournamentId,
+      seasonId: season.seasonId,
+      playerId: AI_PLAYER_ID,
+      status: 'registered'
+    }
+  });
+}
+
+
+
+async function ensureNextSeason(tournamentId) {
+  const tournament = await prisma.tournament.findUnique({
+    where: { tournamentId },
+    select: {
+      tournamentId: true,
+      status: true,
+      matchDuration: true,
+      stage: true,
+      name: true,
+      metadata: true,
+      entryFee: true
+    }
+  });
+  if (!tournament || tournament.status !== 'active') {
+    return null;
+  }
+
+  const now = new Date();
+  const gameType = normalizeGameType(tournament?.metadata?.gameType);
+  const existingUpcomingCount = await prisma.season.count({
+    where: {
+      tournamentId,
+      status: 'upcoming',
+      startTime: { gt: now }
+    }
+  });
+
+  const lastSeason = await prisma.season.findFirst({
+    where: { tournamentId },
+    orderBy: { seasonNumber: 'desc' },
+    select: { seasonNumber: true, endTime: true, status: true }
+  });
+
+  const isLastSeasonFinal = ['completed', 'finished', 'cancelled'].includes(lastSeason?.status);
+  if (gameType !== 'with_ai') {
+    if (existingUpcomingCount > 0) {
+      return null;
+    }
+    if (lastSeason && !isLastSeasonFinal && lastSeason.endTime && now <= new Date(lastSeason.endTime)) {
+      return null;
+    }
+  } else if (existingUpcomingCount >= WITH_AI_SEASON_BUFFER) {
+    return null;
+  }
+
+  const matchDurationSeconds = Number(tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS);
+  const nextSeasonNumber = lastSeason ? lastSeason.seasonNumber + 1 : 1;
+  const minStartTime = new Date(now.getTime() + (JOIN_WINDOW_MINUTES + FIXTURE_DELAY_MINUTES) * 60 * 1000);
+
+  if (gameType === 'with_ai') {
+    const lastByStart = await prisma.season.findFirst({
+      where: { tournamentId },
+      orderBy: { startTime: 'desc' },
+      select: { startTime: true }
+    });
+    const intervalMs = WITH_AI_INTERVAL_MINUTES * 60 * 1000;
+    let startTime = minStartTime;
+    if (lastByStart?.startTime) {
+      const lastStartTime = new Date(lastByStart.startTime);
+      if (lastStartTime >= minStartTime) {
+        startTime = new Date(lastStartTime.getTime() + intervalMs);
+      }
+    }
+
+    const seasonsToCreate = Math.max(0, WITH_AI_SEASON_BUFFER - existingUpcomingCount);
+    let createdSeason = null;
+    for (let i = 0; i < seasonsToCreate; i += 1) {
+      const scheduledStart = new Date(startTime.getTime() + i * intervalMs);
+      createdSeason = await createSeasonAndSchedule({
+        tournament,
+        seasonNumber: nextSeasonNumber + i,
+        startTime: scheduledStart,
+        matchDurationSeconds
+      });
+    }
+    return createdSeason;
+  }
+
+  const anchorTime = lastSeason?.endTime && !isLastSeasonFinal
+    ? new Date(lastSeason.endTime)
+    : minStartTime;
+  return createSeasonAndSchedule({
+    tournament,
+    seasonNumber: nextSeasonNumber,
+    startTime: anchorTime,
+    matchDurationSeconds
+  });
 }
 
 async function closeSeasonJoining(seasonId) {
@@ -158,11 +362,15 @@ async function closeSeasonJoining(seasonId) {
 
   const tournament = await prisma.tournament.findUnique({
     where: { tournamentId: season.tournamentId },
-    select: { status: true }
+    select: { status: true, metadata: true, entryFee: true, tournamentId: true, name: true }
   });
   if (!tournament || tournament.status !== 'active') {
     return;
   }
+
+  await ensureAiParticipant({ tournament, season }).catch((err) => {
+    logger.error({ err, seasonId: season.seasonId }, '[scheduler] Failed to register AI before join close');
+  });
 
   await prisma.season.update({
     where: { seasonId },
@@ -192,7 +400,7 @@ async function triggerSeasonFixtures(seasonId) {
   const season = await prisma.season.findUnique({
     where: { seasonId },
     include: {
-      tournament: { select: { tournamentId: true, status: true, stage: true, matchDuration: true } },
+      tournament: { select: { tournamentId: true, status: true, stage: true, matchDuration: true, metadata: true } },
       tournamentPlayers: { select: { playerId: true, status: true } }
     }
   });
@@ -201,7 +409,16 @@ async function triggerSeasonFixtures(seasonId) {
   if (season.status !== 'upcoming') return;
   if (!season.tournament || season.tournament.status !== 'active') return;
 
-  const activePlayers = season.tournamentPlayers
+  await ensureAiParticipant({ tournament: season.tournament, season }).catch((err) => {
+    logger.error({ err, seasonId: season.seasonId }, '[scheduler] Failed to register AI before fixtures');
+  });
+
+  const refreshedPlayers = await prisma.tournamentPlayer.findMany({
+    where: { seasonId },
+    select: { playerId: true, status: true }
+  });
+
+  const activePlayers = refreshedPlayers
     .filter((p) => p.status !== 'eliminated')
     .map((p) => p.playerId);
 
@@ -211,6 +428,10 @@ async function triggerSeasonFixtures(seasonId) {
       : 'group';
   const matchDurationSeconds = Number(season.tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS);
   const seasonStartTime = season.startTime ? season.startTime.toISOString() : undefined;
+
+  const gameType = normalizeGameType(season.tournament?.metadata?.gameType);
+  const aiDifficulty = season.tournament?.metadata?.aiDifficulty ?? null;
+  const aiPlayerId = gameType === 'with_ai' ? (AI_PLAYER_ID || null) : null;
 
   if (activePlayers.length < 2) {
     const now = new Date();
@@ -237,7 +458,10 @@ async function triggerSeasonFixtures(seasonId) {
         stage: tournamentStage,
         players: activePlayers,
         matchDurationSeconds,
-        startTime: seasonStartTime
+        startTime: seasonStartTime,
+        gameType,
+        aiDifficulty,
+        aiPlayerId
       },
       season.seasonId
     ).catch((err) => {
@@ -260,7 +484,10 @@ async function triggerSeasonFixtures(seasonId) {
       stage: tournamentStage,
       players: activePlayers,
       matchDurationSeconds,
-      startTime: seasonStartTime
+      startTime: seasonStartTime,
+      gameType,
+      aiDifficulty,
+      aiPlayerId
     },
     season.seasonId
   );
@@ -423,6 +650,7 @@ async function startTournament(tournamentId) {
     Topics.TOURNAMENT_STARTED,
     {
       tournamentId: updatedTournament.tournamentId,
+      name: updatedTournament.name,
       status: updatedTournament.status,
       stage: updatedTournament.stage,
       startTime: updatedTournament.startTime?.toISOString() || null
@@ -487,6 +715,8 @@ async function startSchedulerWorker() {
 }
 
 module.exports = {
+  ensureAiParticipant,
+  normalizeGameType,
   startSchedulerWorker,
   ensureTournamentSchedule,
   ensureActiveTournamentSchedules,

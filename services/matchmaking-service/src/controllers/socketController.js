@@ -84,17 +84,37 @@ exports.setupSocketHandlers = function(io) {
           readyCount,
           totalPlayers: 2
         });
+
+        // Send timing info if match is in progress
+        const now = new Date();
+        if (match.startedAt) {
+          const elapsedSeconds = Math.floor((now - new Date(match.startedAt)) / 1000);
+          const remainingSeconds = Math.max(0, 300 - elapsedSeconds);
+          
+          socket.emit('match:timing_info', {
+            matchId,
+            startedAt: match.startedAt.toISOString(),
+            elapsedSeconds,
+            remainingSeconds,
+            maxDurationSeconds: 300
+          });
+        }
+
         socket.emit('match:state', {
           matchId,
           status: match.status,
           readyCount,
           totalPlayers: 2,
-          sessionId: match.gameSessionId || null
+          sessionId: match.gameSessionId || null,
+          startedAt: match.startedAt?.toISOString() || null
         });
+        
         if (match.gameSessionId) {
           socket.emit('game:session_created', {
             sessionId: match.gameSessionId,
-            matchId
+            matchId,
+            startedAt: match.startedAt?.toISOString() || null,
+            maxDurationSeconds: 300
           });
         }
         
@@ -299,20 +319,22 @@ const { createP2PMatch } = require('./matchCreationController.js');
           return socket.emit('error', { message: 'Not part of this match' });
         }
 
-        // Update ready status
+        // Update ready status and connection time
+        const now = new Date();
         const updateData = isPlayer1 
-          ? { player1Ready: true, player1ConnectionTime: new Date() }
-          : { player2Ready: true, player2ConnectionTime: new Date() };
+          ? { player1Ready: true, player1ConnectionTime: now }
+          : { player2Ready: true, player2ConnectionTime: now };
 
         await prisma.match.update({
           where: { matchId },
           data: updateData
         });
 
-        // Check if both ready
+        // Check if both ready to start the match timer
         const updatedMatch = await prisma.match.findUnique({
           where: { matchId }
         });
+        
         if (typeof ack === 'function') {
           ack({ ok: true });
         }
@@ -324,14 +346,53 @@ const { createP2PMatch } = require('./matchCreationController.js');
           totalPlayers: 2
         });
 
-        if (updatedMatch.player1Ready && updatedMatch.player2Ready) {
-          // Start game session
-          await startGameSession(io, matchId);
+        // Start match when both players are ready
+        if (updatedMatch.player1Ready && updatedMatch.player2Ready && !updatedMatch.startedAt) {
+          const startTime = new Date();
+          await prisma.match.update({
+            where: { matchId },
+            data: { 
+              status: 'in-progress',
+              startedAt: startTime
+            }
+          });
+
+          // Notify players that match has started with timing info
+          io.to(`match:${matchId}`).emit('match:started', {
+            matchId,
+            startedAt: startTime.toISOString(),
+            maxDurationSeconds: 300, // 5 minutes
+            gameSessionId: updatedMatch.gameSessionId
+          });
+
+          // Start game session if it exists
+          if (updatedMatch.gameSessionId) {
+            io.to(`match:${matchId}`).emit('game:session_created', {
+              sessionId: updatedMatch.gameSessionId,
+              matchId,
+              startedAt: startTime.toISOString(),
+              maxDurationSeconds: 300
+            });
+          }
         } else {
+          // Send timing info for ongoing match
+          if (updatedMatch.startedAt) {
+            const elapsedSeconds = Math.floor((now - new Date(updatedMatch.startedAt)) / 1000);
+            const remainingSeconds = Math.max(0, 300 - elapsedSeconds);
+            
+            socket.emit('match:timing_info', {
+              matchId,
+              startedAt: updatedMatch.startedAt.toISOString(),
+              elapsedSeconds,
+              remainingSeconds,
+              maxDurationSeconds: 300
+            });
+          }
+
           // Notify waiting for opponent
           io.to(`match:${matchId}`).emit('match:waiting_opponent', {
             matchId,
-            playersReady: updatedMatch.player1Ready && updatedMatch.player2Ready ? 2 : 1
+            playersReady: readyCount
           });
         }
 
@@ -361,8 +422,46 @@ const { createP2PMatch } = require('./matchCreationController.js');
           status: match.status,
           readyCount,
           totalPlayers: 2,
-          sessionId: match.gameSessionId || null
+          sessionId: match.gameSessionId || null,
+          startedAt: match.startedAt?.toISOString() || null
         });
+
+        // Send timing info if match is in progress
+        if (match.startedAt) {
+          const now = new Date();
+          const elapsedSeconds = Math.floor((now - new Date(match.startedAt)) / 1000);
+          const remainingSeconds = Math.max(0, 300 - elapsedSeconds);
+          
+          socket.emit('match:timing_info', {
+            matchId,
+            startedAt: match.startedAt.toISOString(),
+            elapsedSeconds,
+            remainingSeconds,
+            maxDurationSeconds: 300
+          });
+
+          // Auto-complete match if time expired
+          if (remainingSeconds <= 0 && match.status === 'in-progress') {
+            await prisma.match.update({
+              where: { matchId },
+              data: {
+                status: 'completed',
+                completedAt: new Date(),
+                winnerId: null, // Timeout - no winner
+                metadata: {
+                  ...match.metadata,
+                  result: 'timeout'
+                }
+              }
+            });
+
+            io.to(`match:${matchId}`).emit('match:timeout', {
+              matchId,
+              completedAt: new Date().toISOString(),
+              reason: 'time_expired'
+            });
+          }
+        }
       } catch (error) {
         console.error('Match sync error:', error);
         socket.emit('error', { message: 'Failed to sync match state' });
@@ -477,7 +576,7 @@ async function findMatch(io, tournamentId, seasonId, round) {
   }
 }
 
-// Helper: Start game session
+// Helper: Start game session (simplified since sessions are pre-created)
 async function startGameSession(io, matchId) {
   try {
     const match = await prisma.match.findUnique({
@@ -485,14 +584,51 @@ async function startGameSession(io, matchId) {
     });
 
     if (!match) return;
+    if (['completed', 'cancelled'].includes(match.status)) {
+      return;
+    }
 
+    // Game session should already exist from match creation
+    if (match.gameSessionId) {
+      let sessionExists = false;
+      try {
+        const existing = await axios.get(`${GAME_SERVICE_URL}/sessions/${match.gameSessionId}`);
+        sessionExists = Boolean(existing?.data?.data?.sessionId || existing?.data?.data?.session?.sessionId);
+      } catch (error) {
+        console.warn('Start game session: existing session lookup failed', error?.response?.data?.error || error?.message);
+      }
+
+      if (sessionExists) {
+        const startTime = match.startedAt || new Date();
+        if (match.status !== 'in-progress') {
+          await prisma.match.update({
+            where: { matchId },
+            data: {
+              status: 'in-progress',
+              startedAt: startTime
+            }
+          });
+        }
+
+        io.to(`match:${matchId}`).emit('game:session_created', {
+          sessionId: match.gameSessionId,
+          matchId,
+          startedAt: startTime.toISOString(),
+          maxDurationSeconds: 300
+        });
+        return;
+      }
+    }
+
+    // Fallback: create session if it doesn't exist
     const response = await axios.post(`${GAME_SERVICE_URL}/sessions`, {
       player1Id: match.player1Id,
       player2Id: match.player2Id,
       metadata: {
         matchId: match.matchId,
         tournamentId: match.tournamentId,
-        seasonId: match.seasonId
+        seasonId: match.seasonId,
+        maxDurationSeconds: 300
       }
     });
 
@@ -502,19 +638,22 @@ async function startGameSession(io, matchId) {
       return;
     }
 
+    const startTime = new Date();
     await prisma.match.update({
       where: { matchId },
       data: {
         gameSessionId: sessionId,
         status: 'in-progress',
-        startedAt: new Date()
+        startedAt: startTime
       }
     });
 
     // Notify players
     io.to(`match:${matchId}`).emit('game:session_created', {
       sessionId,
-      matchId
+      matchId,
+      startedAt: startTime.toISOString(),
+      maxDurationSeconds: 300
     });
 
     console.log(`✓ Game session created: ${sessionId}`);

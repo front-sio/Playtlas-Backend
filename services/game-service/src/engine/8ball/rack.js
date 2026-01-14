@@ -1,3 +1,4 @@
+// backend/services/game-service/src/engine/8ball/rack.js
 const { Point } = require('./maths');
 
 function setBallPositions({ adjustmentScale, ballRadius, rng }) {

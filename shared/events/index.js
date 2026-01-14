@@ -15,10 +15,13 @@ const Topics = {
   SEASON_FEE_DEBITED: 'wallet.season_fee_debited',
   SEASON_COMPLETED: 'tournament.season_completed',
   SEASON_CANCELLED: 'tournament.season_cancelled',
+  SEASON_CREATED: 'tournament.season_created',
+  MATCH_READY: 'tournament.match_ready',
   GENERATE_MATCHES: 'tournament.generate_matches',
   MATCH_COMPLETED: 'tournament.match_completed',
   MATCH_RESULT: 'tournament.match_result',
   PRIZE_CREDITED: 'wallet.prize_credited',
+  PLATFORM_FEE_CREDITED: 'wallet.platform_fee_credited',
   NOTIFICATION_SEND: 'notification.send',
 
   // Payment events

@@ -1,9 +1,11 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const axios = require('axios');
 const { prisma } = require('../config/db.js');
 
 const router = express.Router();
 const matchmakingController = require('../controllers/matchmakingController');
+const GAME_SERVICE_URL = process.env.GAME_SERVICE_URL || 'http://localhost:3006';
 
 // Update match result
 router.put('/match/:matchId/result', matchmakingController.updateMatchResult);
@@ -65,9 +67,12 @@ router.get('/match/:matchId', async (req, res) => {
     // Get session if exists
     let session = null;
     if (match.gameSessionId) {
-      session = await prisma.gameSession.findFirst({
-        where: { matchId: matchId }
-      });
+      try {
+        const response = await axios.get(`${GAME_SERVICE_URL}/sessions/${match.gameSessionId}`);
+        session = response?.data?.data || null;
+      } catch (err) {
+        console.warn('Get match session error:', err?.response?.data?.error || err?.message);
+      }
     }
 
     res.json({

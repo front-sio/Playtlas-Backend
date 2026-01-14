@@ -111,7 +111,8 @@ model TournamentReadModel {
   competitionWalletId String?   @map("competition_wallet_id") @db.Uuid
   startTime           DateTime? @map("start_time")
   endTime             DateTime? @map("end_time")
-  matchDuration       Int?      @map("season_duration")
+  matchDuration       Int?      @map("match_duration")
+  seasonDuration      Int?      @map("season_duration")
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @default(now()) @map("updated_at")
   lastEventAt         DateTime  @default(now()) @map("last_event_at")

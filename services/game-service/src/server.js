@@ -8,7 +8,7 @@ const helmet = require('helmet');
 const gameRoutes = require('./routes/gameRoutes');
 const logger = require('./utils/logger');
 const { startGameSessionCleanupWorker } = require('./jobs/gameSessionCleanupWorker');
-const { setupGameSocketHandlers } = require('./controllers/gameSocketController');
+const { setupGameSocketHandlers, startTimeoutChecker } = require('./controllers/gameSocketController');
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const app = express();
@@ -72,6 +72,9 @@ const io = new Server(httpServer, {
 // Setup game socket handlers
 setupGameSocketHandlers(io);
 
+// Start periodic timeout checker for expired matches
+startTimeoutChecker(io);
+
 // Make io accessible to routes
 app.set('io', io);
 
@@ -85,7 +88,15 @@ httpServer.listen(PORT, () => {
 if (process.env.DISABLE_GAME_SESSION_CLEANUP === 'true') {
   logger.warn('Game session cleanup worker disabled via DISABLE_GAME_SESSION_CLEANUP');
 } else {
-  startGameSessionCleanupWorker();
+  try {
+    startGameSessionCleanupWorker();
+  } catch (error) {
+    if (error.message.includes('bullmq') || error.message.includes('Redis')) {
+      logger.warn('Redis/BullMQ not available, running without background workers');
+    } else {
+      logger.error({ err: error }, 'Failed to start game session cleanup worker');
+    }
+  }
 }
 
 module.exports = { app, io };

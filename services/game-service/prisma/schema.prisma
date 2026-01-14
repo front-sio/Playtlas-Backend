@@ -13,10 +13,18 @@ model GameSession {
   player1Id   String    @db.Uuid
   player2Id   String    @db.Uuid
   status      String    @default("pending")
+  gameState   Json?
   result      Json?
   metadata    Json?
+  player1Ready Boolean  @default(false)
+  player2Ready Boolean  @default(false)
+  player1ConnectionTime DateTime?
+  player2ConnectionTime DateTime?
+  player1Connected Boolean @default(false)
+  player2Connected Boolean @default(false)
   startedAt   DateTime?
   endedAt     DateTime?
+  lastActivityAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 

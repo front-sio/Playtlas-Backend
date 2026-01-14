@@ -1,6 +1,8 @@
 // backend/api-gateway/config/proxy.js
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const logger = require('../utils/logger');
+
+// Try to load authMiddleware, fallback to bypass in development
 let authMiddleware;
 try {
   ({ authMiddleware } = require('/shared/middlewares/authMiddleware'));
@@ -8,7 +10,20 @@ try {
   try {
     ({ authMiddleware } = require('../../shared/middlewares/authMiddleware'));
   } catch (innerError) {
-    ({ authMiddleware } = require('../../../shared/middlewares/authMiddleware'));
+    try {
+      ({ authMiddleware } = require('../../../shared/middlewares/authMiddleware'));
+    } catch (finalError) {
+      logger.warn('Auth middleware not found, using bypass in development');
+      // Fallback auth middleware for development
+      authMiddleware = (req, res, next) => {
+        if (process.env.NODE_ENV === 'development') {
+          // In development, bypass auth for easier testing
+          next();
+        } else {
+          res.status(500).json({ error: 'Authentication middleware not available' });
+        }
+      };
+    }
   }
 }
 
@@ -32,20 +47,26 @@ const setupProxy = (app, server) => {
     }
   });
 
-  if (socketTargets.game) {
-    const gameSocketProxy = createProxyMiddleware('/socket.io/game', socketProxyOptions(socketTargets.game));
-    app.use(gameSocketProxy);
-    if (server) {
-      server.on('upgrade', gameSocketProxy.upgrade);
+  // Only create socket proxies if services are available
+  // For now, skip socket proxies in development to avoid conflicts
+  if (process.env.NODE_ENV === 'production') {
+    if (socketTargets.game) {
+      const gameSocketProxy = createProxyMiddleware('/socket.io/game', socketProxyOptions(socketTargets.game));
+      app.use(gameSocketProxy);
+      if (server) {
+        server.on('upgrade', gameSocketProxy.upgrade);
+      }
     }
-  }
 
-  if (socketTargets.matchmaking) {
-    const matchmakingSocketProxy = createProxyMiddleware('/socket.io/matchmaking', socketProxyOptions(socketTargets.matchmaking));
-    app.use(matchmakingSocketProxy);
-    if (server) {
-      server.on('upgrade', matchmakingSocketProxy.upgrade);
+    if (socketTargets.matchmaking) {
+      const matchmakingSocketProxy = createProxyMiddleware('/socket.io/matchmaking', socketProxyOptions(socketTargets.matchmaking));
+      app.use(matchmakingSocketProxy);
+      if (server) {
+        server.on('upgrade', matchmakingSocketProxy.upgrade);
+      }
     }
+  } else {
+    logger.info('Development mode: Skipping socket proxies to avoid conflicts with main Socket.IO server');
   }
 
   // Auth Service

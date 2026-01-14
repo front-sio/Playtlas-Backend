@@ -29,35 +29,61 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
   .map((o) => o.trim())
   .filter(Boolean);
 
+// Specific origins for production
+const productionOrigins = [
+  'https://play-atlas-games.vercel.app',
+  'https://playatlasapi.sifex.co.tz',
+  'https://play-atlas-frontend.vercel.app'
+];
+
 const resolveCorsOrigin = (origin, callback) => {
   if (!origin) {
     return callback(null, true);
   }
 
-  if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+  // In production, use specific origins
+  if (NODE_ENV === 'production') {
+    if (productionOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  }
+
+  // In development, allow all or use configured origins
+  if (allowedOrigins.length === 0 || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
     return callback(null, true);
   }
 
   return callback(new Error('Not allowed by CORS'));
 };
 
-const socketPath = process.env.SOCKET_IO_PATH || '/socket.io';
+const defaultSocketPath = '/socket.io';
+const socketPath = NODE_ENV === 'development'
+  ? defaultSocketPath
+  : (process.env.SOCKET_IO_PATH || defaultSocketPath);
+logger.info(`Socket.IO path: ${socketPath}`, { service: 'api-gateway' });
 
-// Socket.IO setup
+// Socket.IO setup with improved CORS
 const io = new Server(server, {
   path: socketPath,
   cors: {
-    origin: process.env.SOCKET_CORS_ORIGIN || resolveCorsOrigin,
-    methods: ['GET', 'POST']
-  }
+    origin: NODE_ENV === 'production' ? productionOrigins : (process.env.SOCKET_IO_CORS_ORIGIN === '*' ? true : resolveCorsOrigin),
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Authorization', 'Content-Type'],
+    credentials: true
+  },
+  allowEIO3: true,
+  transports: ['websocket', 'polling']
 });
 
 // Middlewares
 app.use(helmet());
 app.use(
   cors({
-    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
-    credentials: true
+    origin: NODE_ENV === 'production' ? productionOrigins : (allowedOrigins.length > 0 && !allowedOrigins.includes('*') ? allowedOrigins : true),
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'Accept']
   })
 );
 app.use(compression());
@@ -70,7 +96,7 @@ app.use(
 // app.use(express.json());
 // app.use(express.urlencoded({ extended: true }));
 
-// Rate limiting
+// Rate limiting (disabled for development)
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 900000,
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 100,
@@ -78,11 +104,69 @@ const limiter = rateLimit({
   legacyHeaders: false,
   message: 'Too many requests from this IP, please try again later.'
 });
-app.use('/api', limiter);
+
+// Only apply rate limiting in production
+if (NODE_ENV === 'production' && process.env.RATE_LIMIT_ENABLED !== 'false') {
+  app.use('/api', limiter);
+  logger.info('Rate limiting enabled for production');
+} else {
+  logger.info('Rate limiting disabled for development');
+}
 
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', service: 'api-gateway', env: NODE_ENV, timestamp: new Date().toISOString() });
+});
+
+// Internal socket broadcast endpoint for services
+app.post('/internal/socket/broadcast', express.json(), (req, res) => {
+  try {
+    const { type, data } = req.body;
+
+    if (!type || !data) {
+      return res.status(400).json({ success: false, error: 'Type and data are required' });
+    }
+
+    switch (type) {
+      case 'user:notification':
+        if (data.userId && data.notification) {
+          io.to(`user:${data.userId}`).emit('notification:new', data.notification);
+          logger.info({ userId: data.userId, type: data.notification.type }, '[internal/socket] User notification sent');
+        }
+        break;
+
+      case 'global:notification':
+        if (data.notification) {
+          io.emit('notification:broadcast', data.notification);
+          logger.info({ type: data.notification.type }, '[internal/socket] Global notification broadcasted');
+        }
+        break;
+
+      case 'tournament:season_created':
+        if (data.tournamentId && data.seasonData) {
+          io.to(`tournament:${data.tournamentId}`).emit('tournament:season_created', data.seasonData);
+          logger.info({ tournamentId: data.tournamentId }, '[internal/socket] Season created notification sent');
+        }
+        break;
+
+      case 'match:ready':
+        if (data.matchData) {
+          const { player1Id, player2Id, matchId } = data.matchData;
+          io.to(`user:${player1Id}`).emit('match:ready', data.matchData);
+          io.to(`user:${player2Id}`).emit('match:ready', data.matchData);
+          logger.info({ matchId, player1Id, player2Id }, '[internal/socket] Match ready notifications sent');
+        }
+        break;
+
+      default:
+        return res.status(400).json({ success: false, error: 'Unknown broadcast type' });
+    }
+
+    res.json({ success: true, message: 'Broadcast sent' });
+  } catch (error) {
+    logger.error({ error }, '[internal/socket] Broadcast failed');
+    res.status(500).json({ success: false, error: 'Broadcast failed' });
+  }
 });
 
 // Batch lookup for match metadata

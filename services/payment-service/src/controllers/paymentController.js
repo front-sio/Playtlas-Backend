@@ -365,6 +365,13 @@ exports.getTransactionHistory = async (req, res) => {
 
     let transactions = [];
     const hasModel = (model) => model && typeof model.findMany === 'function';
+    const mapTransferType = (transfer, direction) => {
+      const metaType = transfer?.metadata?.type;
+      if (metaType === 'season_prize') return 'prize';
+      if (metaType === 'platform_fee') return 'platform_fee';
+      if (metaType === 'season_refund') return 'refund';
+      return direction === 'sent' ? 'transfer_sent' : 'transfer_received';
+    };
 
     if (type === 'deposit' || type === 'deposits') {
       transactions = await prisma.deposit.findMany({
@@ -468,8 +475,18 @@ exports.getTransactionHistory = async (req, res) => {
         }
       });
       transactions = [
-        ...sentTransfers.map(t => ({ ...t, type: 'transfer_sent', id: t.transferId, direction: 'sent' })),
-        ...receivedTransfers.map(t => ({ ...t, type: 'transfer_received', id: t.transferId, direction: 'received' }))
+        ...sentTransfers.map(t => ({
+          ...t,
+          type: mapTransferType(t, 'sent'),
+          id: t.transferId,
+          direction: 'sent'
+        })),
+        ...receivedTransfers.map(t => ({
+          ...t,
+          type: mapTransferType(t, 'received'),
+          id: t.transferId,
+          direction: 'received'
+        }))
       ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
         .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
     } else {
@@ -562,8 +579,18 @@ exports.getTransactionHistory = async (req, res) => {
         ...deposits.map(t => ({ ...t, type: 'deposit', id: t.depositId, fee: null })),
         ...withdrawals.map(t => ({ ...t, type: 'withdrawal', id: t.withdrawalId })),
         ...tournamentFees.map(t => ({ ...t, type: 'tournament_fee', id: t.feeId })),
-        ...sentTransfers.map(t => ({ ...t, type: 'transfer_sent', id: t.transferId, direction: 'sent' })),
-        ...receivedTransfers.map(t => ({ ...t, type: 'transfer_received', id: t.transferId, direction: 'received' }))
+        ...sentTransfers.map(t => ({
+          ...t,
+          type: mapTransferType(t, 'sent'),
+          id: t.transferId,
+          direction: 'sent'
+        })),
+        ...receivedTransfers.map(t => ({
+          ...t,
+          type: mapTransferType(t, 'received'),
+          id: t.transferId,
+          direction: 'received'
+        }))
       ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
         .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
     }
@@ -581,6 +608,7 @@ exports.listAdminTransactions = async (req, res) => {
     const { type, status, limit = 50, offset = 0 } = req.query;
     const take = parseInt(limit, 10);
     const skip = parseInt(offset, 10);
+    const hasModel = (model) => model && typeof model.findMany === 'function';
 
     if (type === 'deposit' || type === 'deposits') {
       const where = {};
@@ -662,6 +690,31 @@ exports.listAdminTransactions = async (req, res) => {
       });
     }
 
+    if (type === 'transfer' || type === 'transfers' || type === 'wallet_transfer') {
+      if (!hasModel(prisma.walletTransfer)) {
+        return res.json({ success: true, data: { transactions: [], total: 0 } });
+      }
+      const where = {};
+      if (status) where.status = status;
+      const [rows, total] = await Promise.all([
+        prisma.walletTransfer.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          take,
+          skip
+        }),
+        prisma.walletTransfer.count({ where })
+      ]);
+
+      return res.json({
+        success: true,
+        data: {
+          transactions: rows.map((row) => ({ ...row, type: 'wallet_transfer', id: row.transferId })),
+          total
+        }
+      });
+    }
+
     const depositWhere = {};
     const withdrawalWhere = {};
     if (status) {
@@ -669,7 +722,7 @@ exports.listAdminTransactions = async (req, res) => {
       withdrawalWhere.status = status;
     }
 
-    const [deposits, withdrawals] = await Promise.all([
+    const [deposits, withdrawals, walletTransfers] = await Promise.all([
       prisma.deposit.findMany({
         where: depositWhere,
         orderBy: { createdAt: 'desc' },
@@ -713,12 +766,18 @@ exports.listAdminTransactions = async (req, res) => {
           failureReason: true,
           totalDeducted: true
         }
-      })
+      }),
+      hasModel(prisma.walletTransfer)
+        ? prisma.walletTransfer.findMany({
+            orderBy: { createdAt: 'desc' }
+          })
+        : Promise.resolve([])
     ]);
 
     const combined = [
       ...deposits.map((row) => ({ ...row, type: 'deposit', id: row.depositId, date: row.createdAt })),
-      ...withdrawals.map((row) => ({ ...row, type: 'withdrawal', id: row.withdrawalId, date: row.createdAt }))
+      ...withdrawals.map((row) => ({ ...row, type: 'withdrawal', id: row.withdrawalId, date: row.createdAt })),
+      ...walletTransfers.map((row) => ({ ...row, type: 'wallet_transfer', id: row.transferId, date: row.createdAt }))
     ]
       .sort((a, b) => new Date(b.date) - new Date(a.date))
       .slice(skip, skip + take)

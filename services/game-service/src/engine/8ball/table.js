@@ -1,3 +1,4 @@
+// backend/services/game-service/src/engine/8ball/table.js
 const Vector2D = require('./vector2d');
 const { Point } = require('./maths');
 

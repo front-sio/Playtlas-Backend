@@ -12,6 +12,7 @@ const { testConnection, prisma } = require('./config/db.js');
 const cron = require('node-cron');
 const { getProvider } = require('./providers/index.js');
 const paymentProcessingService = require('./services/paymentProcessing.js');
+const { startPaymentConsumers } = require('./kafka/consumers.js');
 
 const app = express();
 const PORT = process.env.PORT || 3003;
@@ -33,6 +34,11 @@ app.use((req, res, next) => {
 
 // Routes
 app.use('/', paymentRoutes);
+
+// Start Kafka consumers for internal wallet credit events
+startPaymentConsumers().catch((err) => {
+  logger.error({ err }, '[payment-service] Failed to start Kafka consumers');
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {

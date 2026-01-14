@@ -161,6 +161,30 @@ model PaymentMethod {
   @@map("payment_methods")
 }
 
+model WalletTransfer {
+  transferId      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fromUserId      String?   @db.Uuid
+  fromWalletId    String?   @db.Uuid
+  toUserId        String?   @db.Uuid
+  toWalletId      String?   @db.Uuid
+  amount          Decimal   @db.Decimal(15, 2)
+  fee             Decimal   @default(0) @db.Decimal(15, 2)
+  currency        String    @default("TZS") @db.Text
+  description     String?   @db.Text
+  referenceNumber String    @unique @db.Text
+  status          String    @default("completed") @db.Text
+  failureReason   String?   @db.Text
+  processedAt     DateTime?
+  metadata        Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([fromUserId])
+  @@index([toUserId])
+  @@index([createdAt])
+  @@map("wallet_transfers")
+}
+
 model DailyLimit {
   limitId          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId           String    @db.Uuid

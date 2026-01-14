@@ -1,3 +1,4 @@
+// backend/services/game-service/src/engine/8ball/rules.js
 class EightBallRules {
   constructor() {
     this.state = this.getInitialState();

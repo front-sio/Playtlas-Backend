@@ -12,6 +12,53 @@ function buildCancelMetadata(reason, winnerId) {
   };
 }
 
+function buildTimeoutMetadata(match, resolution) {
+  const existing = match.metadata && typeof match.metadata === 'object'
+    ? match.metadata
+    : {};
+  return {
+    ...existing,
+    timeout: {
+      reason: 'match_timeout',
+      resolution,
+      endedAt: new Date().toISOString()
+    }
+  };
+}
+
+function resolveTimeoutWinner(match) {
+  const player1Score = Number(match.player1Score || 0);
+  const player2Score = Number(match.player2Score || 0);
+
+  if (player1Score > player2Score) {
+    return { winnerId: match.player1Id, resolution: 'score' };
+  }
+
+  if (player2Score > player1Score) {
+    return { winnerId: match.player2Id, resolution: 'score' };
+  }
+
+  const player1Time = match.player1ConnectionTime ? new Date(match.player1ConnectionTime).getTime() : null;
+  const player2Time = match.player2ConnectionTime ? new Date(match.player2ConnectionTime).getTime() : null;
+
+  if (player1Time && player2Time && player1Time !== player2Time) {
+    return {
+      winnerId: player1Time <= player2Time ? match.player1Id : match.player2Id,
+      resolution: 'connection_time'
+    };
+  }
+
+  if (player1Time && !player2Time) {
+    return { winnerId: match.player1Id, resolution: 'connection_time' };
+  }
+
+  if (!player1Time && player2Time) {
+    return { winnerId: match.player2Id, resolution: 'connection_time' };
+  }
+
+  return { winnerId: match.player1Id, resolution: 'default' };
+}
+
 async function handleTimeout(io, prisma, match) {
   const player1Ready = Boolean(match.player1Ready);
   const player2Ready = Boolean(match.player2Ready);
@@ -42,6 +89,28 @@ async function handleTimeout(io, prisma, match) {
       matchId: match.matchId,
       winnerId: match.player2Id,
       reason: 'opponent_no_show'
+    });
+    return;
+  }
+
+  if (player1Ready && player2Ready) {
+    const { winnerId, resolution } = resolveTimeoutWinner(match);
+    await completeMatchAndProgress({
+      matchId: match.matchId,
+      winnerId,
+      player1Score: Number(match.player1Score || 0),
+      player2Score: Number(match.player2Score || 0)
+    });
+    await prisma.match.update({
+      where: { matchId: match.matchId },
+      data: {
+        metadata: buildTimeoutMetadata(match, resolution)
+      }
+    });
+    io.to(`match:${match.matchId}`).emit('match:completed', {
+      matchId: match.matchId,
+      winnerId,
+      reason: 'match_timeout'
     });
     return;
   }

@@ -292,11 +292,52 @@ class SeasonMatchmakingController {
           message: `Match is ${match.status}, cannot start`
         });
       }
+
+      if (match.gameSessionId) {
+        const startTime = match.startedAt || new Date();
+        await prisma.match.update({
+          where: { matchId },
+          data: {
+            status: 'in_progress',
+            startedAt: startTime
+          }
+        });
+
+        let gameSession = null;
+        try {
+          const existingSession = await axios.get(`${GAME_SERVICE_URL}/sessions/${match.gameSessionId}`);
+          gameSession = existingSession.data?.data || existingSession.data?.session || null;
+        } catch (error) {
+          logger.warn({ err: error, matchId, sessionId: match.gameSessionId }, 'Failed to fetch existing game session');
+        }
+
+        res.json({
+          success: true,
+          match: {
+            ...match,
+            status: 'in_progress',
+            gameSessionId: match.gameSessionId
+          },
+          gameSession: gameSession || { sessionId: match.gameSessionId },
+          redirectUrl: `/8ball-match?matchId=${matchId}&sessionId=${match.gameSessionId}&playerId=${playerId}&token=match-token-${Date.now()}`
+        });
+
+        const io = getIO();
+        if (io) {
+          const otherPlayerId = match.player1Id === playerId ? match.player2Id : match.player1Id;
+          io.to(`player:${otherPlayerId}`).emit('match:started', {
+            matchId,
+            gameSessionId: match.gameSessionId,
+            message: 'Your match has started!'
+          });
+        }
+
+        return;
+      }
       
       // Create game session for the match via game service
       try {
-        const gameSessionResponse = await axios.post(`${GAME_SERVICE_URL}/api/sessions`, {
-          sessionId: `match-${matchId}-${Date.now()}`,
+        const gameSessionResponse = await axios.post(`${GAME_SERVICE_URL}/sessions`, {
           player1Id: match.player1Id,
           player2Id: match.player2Id,
           metadata: {
@@ -307,7 +348,19 @@ class SeasonMatchmakingController {
           }
         });
         
-        const gameSession = gameSessionResponse.data.session;
+        const gameSession =
+          gameSessionResponse.data?.data?.session ||
+          gameSessionResponse.data?.data ||
+          gameSessionResponse.data?.session ||
+          null;
+
+        if (!gameSession?.sessionId) {
+          logger.error('Error creating game session: missing sessionId', { matchId });
+          return res.status(500).json({
+            success: false,
+            message: 'Failed to create game session'
+          });
+        }
         
         // Update match status
         await prisma.match.update({

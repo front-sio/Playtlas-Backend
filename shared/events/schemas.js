@@ -76,6 +76,15 @@ function validatePrizeCredited(payload) {
   return { ok: true, value: payload };
 }
 
+function validatePlatformFeeCredited(payload) {
+  if (!payload || !isString(payload.tournamentId)) return { ok: false, error: 'tournamentId is required' };
+  if (!isString(payload.seasonId)) return { ok: false, error: 'seasonId is required' };
+  if (!isString(payload.walletId)) return { ok: false, error: 'walletId is required' };
+  if (!isString(payload.amount)) return { ok: false, error: 'amount is required' };
+  if (!isString(payload.currency)) return { ok: false, error: 'currency is required' };
+  return { ok: true, value: payload };
+}
+
 function validateDepositApproved(payload) {
   if (!payload || !isString(payload.depositId)) return { ok: false, error: 'depositId is required' };
   if (!isString(payload.walletId)) return { ok: false, error: 'walletId is required' };
@@ -94,9 +103,27 @@ function validateWithdrawalApproved(payload) {
   return { ok: true, value: payload };
 }
 
+function validateSeasonCreated(payload) {
+  if (!payload || !isString(payload.tournamentId)) return { ok: false, error: 'tournamentId is required' };
+  if (!isString(payload.seasonId)) return { ok: false, error: 'seasonId is required' };
+  if (!isString(payload.name)) return { ok: false, error: 'name is required' };
+  if (!isString(payload.startTime)) return { ok: false, error: 'startTime is required' };
+  return { ok: true, value: payload };
+}
+
+function validateMatchReady(payload) {
+  if (!payload || !isString(payload.matchId)) return { ok: false, error: 'matchId is required' };
+  if (!isString(payload.tournamentId)) return { ok: false, error: 'tournamentId is required' };
+  if (!isString(payload.seasonId)) return { ok: false, error: 'seasonId is required' };
+  if (!isString(payload.player1Id)) return { ok: false, error: 'player1Id is required' };
+  if (!isString(payload.player2Id)) return { ok: false, error: 'player2Id is required' };
+  return { ok: true, value: payload };
+}
+
 function validateNotificationSend(payload) {
   if (!payload) return { ok: false, error: 'payload is required' };
-  if (!isString(payload.userId)) return { ok: false, error: 'userId is required' };
+  // userId can be null for broadcast notifications
+  if (payload.userId && !isString(payload.userId)) return { ok: false, error: 'userId must be a string if provided' };
   if (!isString(payload.channel)) return { ok: false, error: 'channel is required' };
   if (!isString(payload.type)) return { ok: false, error: 'type is required' };
   if (!isString(payload.title)) return { ok: false, error: 'title is required' };
@@ -137,9 +164,12 @@ const validatorsByTopic = {
   'tournament.player_joined_season': validatePlayerJoinedSeason,
   'tournament.season_completed': validateSeasonCompleted,
   'tournament.season_cancelled': validateSeasonCancelled,
+  'tournament.season_created': validateSeasonCreated,
+  'tournament.match_ready': validateMatchReady,
   'tournament.match_completed': validateMatchCompleted,
   'tournament.match_result': validateMatchResult,
   'wallet.prize_credited': validatePrizeCredited,
+  'wallet.platform_fee_credited': validatePlatformFeeCredited,
   'notification.send': validateNotificationSend,
 
   'payment.deposit_approved': validateDepositApproved,

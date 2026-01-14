@@ -2,9 +2,9 @@
 const { prisma } = require('../config/db');
 const logger = require('../utils/logger');
 const { subscribeEvents, publishEvent, Topics } = require('../../../../shared/events');
-const { completeMatchAndProgress } = require('./matchmakingController');
 const { getIO } = require('../utils/socket');
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 
 const BYE_PLAYER_ID = '00000000-0000-0000-0000-000000000000';
 const GROUP_SIZE = Number(process.env.GROUP_SIZE || 4);
@@ -12,6 +12,71 @@ const GROUP_QUALIFIERS = Number(process.env.GROUP_QUALIFIERS || 2);
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
 const MAX_PARALLEL_MATCHES = Number(process.env.MATCH_MAX_PARALLEL || 5);
 const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://wallet-service:3000';
+const PAYMENT_SERVICE_URL =
+  process.env.PAYMENT_SERVICE_URL ||
+  (process.env.API_GATEWAY_URL ? `${process.env.API_GATEWAY_URL}/api/payment` : null) ||
+  'http://localhost:8081/api/payment';
+const SERVICE_JWT_TOKEN = process.env.SERVICE_JWT_TOKEN || process.env.PAYMENT_SERVICE_TOKEN;
+const GAME_SERVICE_URL = process.env.GAME_SERVICE_URL || 'http://localhost:3006';
+let cachedServiceToken = null;
+let cachedServiceTokenExpiry = 0;
+
+function getServiceToken() {
+  if (SERVICE_JWT_TOKEN) return SERVICE_JWT_TOKEN;
+  const now = Date.now();
+  if (cachedServiceToken && now < cachedServiceTokenExpiry) {
+    return cachedServiceToken;
+  }
+  const secret = process.env.JWT_SECRET;
+  if (!secret) return null;
+  try {
+    const token = jwt.sign({ userId: 'system', role: 'service' }, secret, { expiresIn: '5m' });
+    cachedServiceToken = token;
+    cachedServiceTokenExpiry = now + 4 * 60 * 1000;
+    return token;
+  } catch (err) {
+    logger.error({ err }, '[refund] Failed to create service token');
+    return null;
+  }
+}
+
+// Helper function to create game session for a match
+async function createGameSessionForMatch(match) {
+  try {
+    const matchMetadata = match?.metadata || {};
+    const matchDurationSeconds = Number(matchMetadata.matchDurationSeconds || 300);
+    
+    const response = await axios.post(`${GAME_SERVICE_URL}/sessions`, {
+      player1Id: match.player1Id,
+      player2Id: match.player2Id,
+      metadata: {
+        matchId: match.matchId,
+        tournamentId: match.tournamentId,
+        seasonId: match.seasonId,
+        scheduledTime: match.scheduledTime,
+        startTime: match.startedAt || match.scheduledTime, // Use actual start time
+        maxDurationSeconds: matchDurationSeconds,
+        gameType: matchMetadata.gameType || null,
+        aiDifficulty: matchMetadata.aiDifficulty ?? null,
+        aiPlayerId: matchMetadata.aiPlayerId || null,
+        instantSession: true, // Mark as instant session for realtime
+        sessionStartTime: new Date().toISOString() // Session creation timestamp
+      }
+    }, { timeout: 10000 });
+
+    const sessionId = response?.data?.data?.sessionId || response?.data?.data?.session?.sessionId;
+    if (!sessionId) {
+      logger.error('Failed to create game session: Missing sessionId from game-service response', { matchId: match.matchId });
+      return null;
+    }
+
+    logger.info(`Game session created for match ${match.matchId}: ${sessionId} with realtime support`);
+    return { sessionId };
+  } catch (error) {
+    logger.error({ err: error, matchId: match.matchId }, 'Failed to create game session for match');
+    return null;
+  }
+}
 
 function getInitialStage(playerCount) {
   if (playerCount <= 2) return 'final';
@@ -68,6 +133,16 @@ async function getRoundStartTime(seasonId, roundNumber, fallbackStart, matchDura
 
 async function refundSeasonEntryFees({ tournamentId, seasonId, playerIds }) {
   if (!playerIds.length) return;
+  
+  if (!prisma) {
+    logger.error('[refundSeasonEntryFees] Prisma client is not available');
+    return;
+  }
+
+  if (!prisma?.tournament?.findUnique) {
+    logger.warn('[refundSeasonEntryFees] Tournament model unavailable; skipping refunds');
+    return;
+  }
 
   const tournament = await prisma.tournament.findUnique({
     where: { tournamentId },
@@ -89,14 +164,27 @@ async function refundSeasonEntryFees({ tournamentId, seasonId, playerIds }) {
       const walletId = walletRes.data?.data?.walletId || walletRes.data?.walletId;
       if (!walletId) continue;
 
-      await axios.post(`${WALLET_SERVICE_URL}/transfer`, {
+      const serviceToken = getServiceToken();
+      if (!serviceToken) {
+        logger.error('[refund] SERVICE_JWT_TOKEN not configured; skipping refund');
+        continue;
+      }
+
+      await axios.post(`${PAYMENT_SERVICE_URL}/internal-transfer`, {
         fromWalletId: systemWalletId,
         toWalletId: walletId,
         amount: entryFee,
         description: 'Season cancelled refund',
-        metadata: { tournamentId, seasonId },
+        metadata: { tournamentId, seasonId, type: 'season_refund' },
+        referenceNumber: `REFUND-${seasonId}-${playerId}`,
+        toUserId: playerId,
         idempotencyKey: `season_refund:${seasonId}:${playerId}`
-      }, { timeout: 10000 });
+      }, {
+        headers: {
+          Authorization: `Bearer ${serviceToken}`
+        },
+        timeout: 10000
+      });
 
       await publishEvent(Topics.NOTIFICATION_SEND, {
         userId: playerId,
@@ -154,7 +242,14 @@ async function cancelSeasonForInsufficientPlayers({ tournamentId, seasonId, play
 async function createMatches(players, options = {}) {
   logger.info('Creating matches', { players, options });
 
-  const { seasonStartTime: rawSeasonStartTime, matchDurationSeconds: rawMatchDurationSeconds, ...matchOptions } = options;
+  const {
+    seasonStartTime: rawSeasonStartTime,
+    matchDurationSeconds: rawMatchDurationSeconds,
+    gameType,
+    aiDifficulty,
+    aiPlayerId,
+    ...matchOptions
+  } = options;
   const matchDurationSeconds = Number(rawMatchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
 
   // TODO: Implement skill-based seeding for better match quality
@@ -181,11 +276,32 @@ async function createMatches(players, options = {}) {
       player2Id,
       status: 'scheduled',
       scheduledTime,
-      metadata: { matchDurationSeconds },
+      metadata: {
+        matchDurationSeconds,
+        maxDurationSeconds: 300,
+        gameType: gameType || null,
+        aiDifficulty: aiDifficulty ?? null,
+        aiPlayerId: aiPlayerId || null
+      },
       ...matchOptions,
     };
 
     const match = await prisma.match.create({ data: matchData });
+    
+    // Create game session immediately for each match
+    try {
+      const gameSession = await createGameSessionForMatch(match);
+      if (gameSession) {
+        await prisma.match.update({
+          where: { matchId: match.matchId },
+          data: { gameSessionId: gameSession.sessionId }
+        });
+        match.gameSessionId = gameSession.sessionId;
+      }
+    } catch (error) {
+      logger.error({ err: error, matchId: match.matchId }, 'Failed to create game session for match');
+    }
+    
     createdMatches.push(match);
   }
 
@@ -201,7 +317,14 @@ async function createMatches(players, options = {}) {
         scheduledTime: new Date(),
         completedAt: new Date(),
         winnerId: byePlayer,
-        metadata: { bye: true, matchDurationSeconds },
+        metadata: { 
+          bye: true, 
+          matchDurationSeconds,
+          maxDurationSeconds: 300,
+          gameType: gameType || null,
+          aiDifficulty: aiDifficulty ?? null,
+          aiPlayerId: aiPlayerId || null
+        },
         ...matchOptions
       }
     });
@@ -223,7 +346,14 @@ function chunkPlayers(players, size) {
 async function createGroupStageMatches(players, options = {}) {
   logger.info('Creating group stage matches', { playerCount: players.length, options });
 
-  const { seasonStartTime: rawSeasonStartTime, matchDurationSeconds: rawMatchDurationSeconds, ...matchOptions } = options;
+  const {
+    seasonStartTime: rawSeasonStartTime,
+    matchDurationSeconds: rawMatchDurationSeconds,
+    gameType,
+    aiDifficulty,
+    aiPlayerId,
+    ...matchOptions
+  } = options;
   const matchDurationSeconds = Number(rawMatchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
   const seasonStartTime = rawSeasonStartTime ? new Date(rawSeasonStartTime) : null;
   const durationMs = matchDurationSeconds * 1000;
@@ -250,10 +380,33 @@ async function createGroupStageMatches(players, options = {}) {
             player2Id,
             status: 'scheduled',
             scheduledTime: new Date(roundStartTime.getTime() + Math.floor(createdMatches.length / MAX_PARALLEL_MATCHES) * durationMs),
-            metadata: { groupId, groupLabel, matchDurationSeconds },
+            metadata: { 
+              groupId, 
+              groupLabel, 
+              matchDurationSeconds,
+              maxDurationSeconds: 300,
+              gameType: gameType || null,
+              aiDifficulty: aiDifficulty ?? null,
+              aiPlayerId: aiPlayerId || null
+            },
             ...matchOptions
           }
         });
+        
+        // Create game session immediately for each match
+        try {
+          const gameSession = await createGameSessionForMatch(match);
+          if (gameSession) {
+            await prisma.match.update({
+              where: { matchId: match.matchId },
+              data: { gameSessionId: gameSession.sessionId }
+            });
+            match.gameSessionId = gameSession.sessionId;
+          }
+        } catch (error) {
+          logger.error({ err: error, matchId: match.matchId }, 'Failed to create game session for group match');
+        }
+        
         createdMatches.push(match);
       }
     }
@@ -264,7 +417,7 @@ async function createGroupStageMatches(players, options = {}) {
 }
 
 async function handleTournamentMatchGeneration(data) {
-  const { tournamentId, seasonId, players, stage, matchDurationSeconds: rawMatchDurationSeconds } = data;
+  const { tournamentId, seasonId, players, stage, matchDurationSeconds: rawMatchDurationSeconds, gameType, aiDifficulty, aiPlayerId } = data;
   if (!tournamentId || !seasonId || !Array.isArray(players)) {
     logger.warn({ data }, 'Invalid tournament match generation payload');
     return;
@@ -279,7 +432,16 @@ async function handleTournamentMatchGeneration(data) {
 
   const normalizedStage = typeof stage === 'string' ? stage : '';
   const matchDurationSeconds = Number(rawMatchDurationSeconds || DEFAULT_MATCH_DURATION_SECONDS);
-  const options = { tournamentId, seasonId, stage: normalizedStage || undefined, roundNumber: 1, matchDurationSeconds };
+  const options = {
+    tournamentId,
+    seasonId,
+    stage: normalizedStage || undefined,
+    roundNumber: 1,
+    matchDurationSeconds,
+    gameType: gameType || undefined,
+    aiDifficulty: aiDifficulty ?? undefined,
+    aiPlayerId: aiPlayerId || undefined
+  };
   const useGroupStage = normalizedStage === 'group' && uniquePlayers.length >= GROUP_SIZE;
   const effectiveStage = useGroupStage ? 'group' : getInitialStage(uniquePlayers.length);
   const seasonStartTime = data.startTime ? new Date(data.startTime) : new Date();
@@ -299,6 +461,27 @@ async function handleTournamentMatchGeneration(data) {
     };
     io.to(`season:${seasonId}`).emit('season:matches_generated', payload);
     io.to(`tournament:${tournamentId}`).emit('season:matches_generated', payload);
+    
+    // Notify individual players about their matches
+    for (const match of matches) {
+      if (match.player1Id && match.player2Id) {
+        try {
+          await publishEvent(Topics.MATCH_READY, {
+            matchId: match.matchId,
+            tournamentId,
+            seasonId,
+            player1Id: match.player1Id,
+            player2Id: match.player2Id,
+            scheduledTime: match.scheduledTime?.toISOString(),
+            stage: effectiveStage,
+            roundNumber: 1,
+            gameSessionId: match.gameSessionId
+          });
+        } catch (eventError) {
+          logger.error({ err: eventError, matchId: match.matchId }, 'Failed to publish MATCH_READY event');
+        }
+      }
+    }
   }
 }
 
@@ -341,7 +524,10 @@ async function handleSeasonCompleted(data) {
 }
 
 exports.createP2PMatch = async (player1Id, player2Id) => {
-    return createMatches([player1Id, player2Id], {});
+    const matches = await createMatches([player1Id, player2Id], {
+      metadata: { maxDurationSeconds: 300 }
+    });
+    return matches;
 };
 
 exports.initializeTournamentEventConsumer = () => {
@@ -371,6 +557,11 @@ exports.initializeTournamentEventConsumer = () => {
             }
             if (topic === Topics.MATCH_RESULT) {
               logger.info('Received MATCH_RESULT event', { matchId: data?.matchId, winnerId: data?.winnerId });
+              const { completeMatchAndProgress } = require('./matchmakingController');
+              if (typeof completeMatchAndProgress !== 'function') {
+                logger.error('completeMatchAndProgress is not available (circular dependency).');
+                return;
+              }
               completeMatchAndProgress({
                 matchId: data.matchId,
                 winnerId: data.winnerId,

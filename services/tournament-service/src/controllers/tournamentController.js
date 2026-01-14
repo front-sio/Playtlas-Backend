@@ -9,6 +9,14 @@ const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES ||
 const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 30);
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
 
+function normalizeGameType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'with_ai' || normalized === 'withai' || normalized === 'ai') {
+    return 'with_ai';
+  }
+  return 'multiplayer';
+}
+
 function getSeasonJoiningCloseTime(seasonStartTime) {
   const fixtureTime = new Date(seasonStartTime);
   return new Date(fixtureTime.getTime() - FIXTURE_DELAY_MINUTES * 60 * 1000);
@@ -36,17 +44,22 @@ function buildTournamentSnapshot(tournament, extra = {}) {
 
 exports.createTournament = async (req, res) => {
   try {
-    const { name, description, entryFee, maxPlayers, startTime, matchDuration, seasonDuration } = req.body;
+    const { name, description, entryFee, maxPlayers, startTime, matchDuration, seasonDuration, gameType, aiDifficulty } = req.body;
+    const normalizedGameType = normalizeGameType(gameType);
+    const effectiveMaxPlayers = normalizedGameType === 'with_ai' ? 2 : maxPlayers;
+    const rawAiDifficulty = aiDifficulty ? Number(aiDifficulty) : null;
+    const normalizedAiDifficulty = rawAiDifficulty ? Math.max(1, Math.min(100, rawAiDifficulty)) : null;
 
     const tournament = await prisma.tournament.create({
       data: {
         name,
         description,
         entryFee,
-        maxPlayers,
+        maxPlayers: effectiveMaxPlayers,
         startTime: startTime ? new Date(startTime) : new Date(Date.now() + 3600000),
         matchDuration: matchDuration || seasonDuration || DEFAULT_MATCH_DURATION_SECONDS,
-        competitionWalletId: null
+        competitionWalletId: null,
+        metadata: { gameType: normalizedGameType, aiDifficulty: normalizedAiDifficulty }
       }
     });
 

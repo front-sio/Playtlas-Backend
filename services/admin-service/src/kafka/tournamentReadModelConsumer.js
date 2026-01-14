@@ -10,7 +10,9 @@ function toDate(value) {
 
 function buildUpdateData(payload, topic) {
   const isDeleted = topic === Topics.TOURNAMENT_DELETED || payload.status === 'deleted';
-  return {
+  
+  // Build update data with only valid fields
+  const updateData = {
     name: payload.name,
     description: payload.description ?? null,
     entryFee: payload.entryFee !== undefined ? Number(payload.entryFee) : undefined,
@@ -21,14 +23,28 @@ function buildUpdateData(payload, topic) {
     competitionWalletId: payload.competitionWalletId ?? null,
     startTime: toDate(payload.startTime),
     endTime: toDate(payload.endTime),
-    matchDuration: payload.matchDuration !== undefined
-      ? Number(payload.matchDuration)
-      : (payload.seasonDuration !== undefined ? Number(payload.seasonDuration) : undefined),
     createdAt: toDate(payload.createdAt),
     updatedAt: toDate(payload.updatedAt) || new Date(),
     lastEventAt: new Date(),
     isDeleted
   };
+  
+  // Only add optional fields if they exist to avoid schema errors
+  if (payload.matchDuration !== undefined) {
+    updateData.matchDuration = Number(payload.matchDuration);
+  }
+  if (payload.seasonDuration !== undefined) {
+    updateData.seasonDuration = Number(payload.seasonDuration);
+  }
+  
+  // Remove undefined values to avoid Prisma validation errors
+  Object.keys(updateData).forEach(key => {
+    if (updateData[key] === undefined) {
+      delete updateData[key];
+    }
+  });
+  
+  return updateData;
 }
 
 async function handleTournamentSnapshot(topic, payload) {

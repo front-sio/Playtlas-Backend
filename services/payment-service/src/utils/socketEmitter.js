@@ -9,7 +9,7 @@ function getSocket() {
   }
 
   const API_GATEWAY_URL = process.env.API_GATEWAY_URL || 'http://localhost:8080';
-  const API_GATEWAY_SOCKET_PATH = process.env.API_GATEWAY_SOCKET_PATH || '/socket.io/gateway';
+  const API_GATEWAY_SOCKET_PATH = process.env.API_GATEWAY_SOCKET_PATH || '/socket.io';
   
   socket = io(API_GATEWAY_URL, {
     path: API_GATEWAY_SOCKET_PATH,
