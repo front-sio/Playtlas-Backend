@@ -7,6 +7,7 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 
 const BYE_PLAYER_ID = '00000000-0000-0000-0000-000000000000';
+const AI_PLAYER_ID = process.env.AI_PLAYER_ID || '04a942ce-af5f-4bde-9068-b9e2ee295fbf';
 const GROUP_SIZE = Number(process.env.GROUP_SIZE || 4);
 const GROUP_QUALIFIERS = Number(process.env.GROUP_QUALIFIERS || 2);
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
@@ -70,7 +71,6 @@ async function createGameSessionForMatch(match) {
     }
     
     // Ensure player2Id is set to AI_PLAYER_ID for with_ai if missing
-    const AI_PLAYER_ID = process.env.AI_PLAYER_ID || '04a942ce-af5f-4bde-9068-b9e2ee295fbf';
     let player2Id = match.player2Id;
     if (isWithAi && !player2Id) {
       player2Id = AI_PLAYER_ID;

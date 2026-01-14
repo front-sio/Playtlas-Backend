@@ -139,7 +139,7 @@ async function handleSeasonCompleted(payload) {
 
   const tournamentMetadata = season.tournament.metadata || {};
   const gameType = typeof tournamentMetadata === 'string' 
-    ? JSON.parse(tournamentMetadata || '{}').gameType 
+    ? JSON.parse(tournamentMetadata).gameType 
     : tournamentMetadata.gameType;
   const isWithAi = gameType === 'with_ai' || gameType === 'ai';
 

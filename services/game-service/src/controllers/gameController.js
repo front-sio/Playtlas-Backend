@@ -28,16 +28,18 @@ function safeParseMetadata(value) {
 
 function computePrizeDistribution({ gameType, entryFee }) {
   const fee = Number(entryFee || 0);
+  const isWithAi = gameType === 'with_ai' || gameType === 'ai';
+  const feePercent = isWithAi ? 0.10 : 0.30;
+  
   if (fee <= 0) {
     return {
       platformFee: 0,
       netPrizePool: 0,
-      feePercent: 0
+      feePercent,
+      potAmount: 0
     };
   }
 
-  const isWithAi = gameType === 'with_ai' || gameType === 'ai';
-  const feePercent = isWithAi ? 0.10 : 0.30;
   // Game sessions are always 1v1, so pot = 2 × entryFee (both players contribute)
   const potAmount = fee * 2;
   const platformFee = Number((potAmount * feePercent).toFixed(2));
@@ -315,3 +317,6 @@ exports.cancelSession = async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to cancel game session' });
   }
 };
+
+// Export helper for use in other controllers
+exports.computePrizeDistribution = computePrizeDistribution;

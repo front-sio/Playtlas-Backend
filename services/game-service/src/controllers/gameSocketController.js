@@ -3,6 +3,7 @@ const { prisma } = require('../config/db.js');
 const logger = require('../utils/logger.js');
 const { publishEvent, Topics } = require('../../../../shared/events');
 const { EightBallEngine } = require('../engine/8ball');
+const { computePrizeDistribution } = require('./gameController.js');
 
 const INSTANCE_ID = process.env.INSTANCE_ID || process.env.HOSTNAME || 'unknown';
 
@@ -399,19 +400,11 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
   const sessionMetadata = parseSessionMetadata(session);
   const gameType = sessionMetadata.gameType || 'pvp';
   const entryFee = Number(sessionMetadata.entryFee || 0);
-  const platformFeePercent = gameType === 'with_ai' ? 0.10 : 0.30;
   
-  let prizeAmount = 0;
-  let netPrizePool = 0;
-  let platformFee = 0;
-  
-  if (entryFee > 0) {
-    // Game sessions are always 1v1, so pot = 2 × entryFee (both players contribute)
-    const potAmount = entryFee * 2;
-    platformFee = Number((potAmount * platformFeePercent).toFixed(2));
-    netPrizePool = Number((potAmount - platformFee).toFixed(2));
-    prizeAmount = netPrizePool; // Single winner gets full prize
-  }
+  const prizeDistribution = computePrizeDistribution({ gameType, entryFee });
+  const prizeAmount = prizeDistribution.netPrizePool;
+  const platformFee = prizeDistribution.platformFee;
+  const platformFeePercent = prizeDistribution.feePercent;
 
   const enhancedResult = {
     winnerId,
