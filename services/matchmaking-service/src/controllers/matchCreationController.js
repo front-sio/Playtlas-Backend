@@ -45,10 +45,41 @@ async function createGameSessionForMatch(match) {
   try {
     const matchMetadata = match?.metadata || {};
     const matchDurationSeconds = Number(matchMetadata.matchDurationSeconds || 300);
+    const gameType = matchMetadata.gameType || null;
+    const isWithAi = gameType === 'with_ai' || gameType === 'ai';
+    
+    // Fetch tournament entry fee if this is a tournament match
+    let entryFee = 0;
+    let platformFeePercent = 0.30;
+    
+    if (match.tournamentId) {
+      try {
+        const tournament = await prisma.tournament.findUnique({
+          where: { tournamentId: match.tournamentId },
+          select: { entryFee: true }
+        });
+        entryFee = Number(tournament?.entryFee || 0);
+      } catch (err) {
+        logger.warn({ err, tournamentId: match.tournamentId }, 'Failed to fetch tournament entry fee');
+      }
+    }
+    
+    // Set platform fee percent based on game type
+    if (isWithAi) {
+      platformFeePercent = 0.10;
+    }
+    
+    // Ensure player2Id is set to AI_PLAYER_ID for with_ai if missing
+    const AI_PLAYER_ID = process.env.AI_PLAYER_ID || '04a942ce-af5f-4bde-9068-b9e2ee295fbf';
+    let player2Id = match.player2Id;
+    if (isWithAi && !player2Id) {
+      player2Id = AI_PLAYER_ID;
+      logger.info({ matchId: match.matchId }, 'Setting player2Id to AI_PLAYER_ID for with_ai match');
+    }
     
     const response = await axios.post(`${GAME_SERVICE_URL}/sessions`, {
       player1Id: match.player1Id,
-      player2Id: match.player2Id,
+      player2Id: player2Id,
       metadata: {
         matchId: match.matchId,
         tournamentId: match.tournamentId,
@@ -56,9 +87,11 @@ async function createGameSessionForMatch(match) {
         scheduledTime: match.scheduledTime,
         startTime: match.startedAt || match.scheduledTime, // Use actual start time
         maxDurationSeconds: matchDurationSeconds,
-        gameType: matchMetadata.gameType || null,
+        gameType: gameType,
         aiDifficulty: matchMetadata.aiDifficulty ?? null,
         aiPlayerId: matchMetadata.aiPlayerId || null,
+        entryFee: entryFee,
+        platformFeePercent: platformFeePercent,
         instantSession: true, // Mark as instant session for realtime
         sessionStartTime: new Date().toISOString() // Session creation timestamp
       }

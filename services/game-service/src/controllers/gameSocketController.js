@@ -395,11 +395,38 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
   const player1Score = Number(resolvedRulesState?.p1Score || 0);
   const player2Score = Number(resolvedRulesState?.p2Score || 0);
 
+  // Compute prize distribution
+  const sessionMetadata = parseSessionMetadata(session);
+  const gameType = sessionMetadata.gameType || 'pvp';
+  const entryFee = Number(sessionMetadata.entryFee || 0);
+  const platformFeePercent = gameType === 'with_ai' ? 0.10 : 0.30;
+  
+  let prizeAmount = 0;
+  let netPrizePool = 0;
+  let platformFee = 0;
+  
+  if (entryFee > 0) {
+    const potAmount = gameType === 'with_ai' ? entryFee * 2 : entryFee * 2;
+    platformFee = Number((potAmount * platformFeePercent).toFixed(2));
+    netPrizePool = Number((potAmount - platformFee).toFixed(2));
+    prizeAmount = netPrizePool; // Single winner gets full prize
+  }
+
+  const enhancedResult = {
+    winnerId,
+    player1Score,
+    player2Score,
+    prizeAmount,
+    netPrizePool,
+    platformFee,
+    feePercent: platformFeePercent
+  };
+
   await prisma.gameSession.update({
     where: { sessionId },
     data: {
       status: 'completed',
-      result: JSON.stringify({ winnerId, player1Score, player2Score }),
+      result: enhancedResult,
       metadata: mergeSessionMetadata(session, metadata),
       endedAt: new Date()
     }
@@ -409,20 +436,9 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
     winnerId,
     player1Score,
     player2Score,
+    prizeAmount,
     timestamp: new Date().toISOString()
   });
-
-  let sessionMetadata = {};
-  if (typeof session.metadata === 'string') {
-    try {
-      sessionMetadata = JSON.parse(session.metadata || '{}');
-    } catch (parseErr) {
-      logger.warn({ err: parseErr, sessionId }, 'Failed to parse game session metadata');
-      sessionMetadata = {};
-    }
-  } else if (session.metadata) {
-    sessionMetadata = session.metadata;
-  }
 
   const matchId = sessionMetadata.matchId || metadata?.matchId;
   if (matchId) {
@@ -442,7 +458,7 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
     logger.warn({ sessionId }, 'Missing matchId in game session metadata');
   }
 
-  logger.info(`Game session ${sessionId} completed. Winner: ${winnerId}`);
+  logger.info(`Game session ${sessionId} completed. Winner: ${winnerId}, Prize: ${prizeAmount}`);
 }
 
 function checkMatchTimeout(session) {
@@ -773,7 +789,16 @@ async function getOrCreateEngine(session) {
   const existing = sessionEngines.get(session.sessionId);
   if (existing) return existing;
 
+  const metadata = parseSessionMetadata(session);
+  const difficulty = getAiDifficulty(metadata);
+  
   const engine = new EightBallEngine();
+  
+  // Set AI difficulty if provided
+  if (metadata?.gameType === 'with_ai' && difficulty) {
+    logger.info({ sessionId: session.sessionId, difficulty }, '[ai] Setting AI difficulty for engine');
+  }
+  
   let needsInitialStateSave = false;
   
   if (session.gameState) {
@@ -808,6 +833,56 @@ async function getOrCreateEngine(session) {
   }
   
   return engine;
+}
+
+async function ensureAiAutoJoin({ io, session }) {
+  const metadata = parseSessionMetadata(session);
+  const aiSide = getAiSide(session);
+  
+  if (!aiSide) {
+    logger.debug({ sessionId: session.sessionId }, '[ai] No AI side detected in ensureAiAutoJoin');
+    return;
+  }
+
+  const isWithAi = metadata?.gameType === 'with_ai' || metadata?.gameType === 'ai';
+  if (!isWithAi) {
+    logger.debug({ sessionId: session.sessionId, gameType: metadata?.gameType }, '[ai] Not a with_ai game type');
+    return;
+  }
+
+  logger.info({ sessionId: session.sessionId, aiSide }, '[ai] Auto-joining AI to session');
+
+  // Mark AI as connected and ready
+  const aiReadyUpdate = aiSide === 'p1' 
+    ? { player1Ready: true, player1Connected: true }
+    : { player2Ready: true, player2Connected: true };
+
+  await prisma.gameSession.update({
+    where: { sessionId: session.sessionId },
+    data: aiReadyUpdate
+  });
+
+  // Broadcast AI joined event
+  const aiPlayerId = metadata?.aiPlayerId || AI_PLAYER_ID;
+  const engine = await getOrCreateEngine(session);
+  const gameState = buildClientState(session, engine);
+
+  io.to(`game:${session.sessionId}`).emit('game:joined', {
+    sessionId: session.sessionId,
+    playerId: aiPlayerId,
+    gameState,
+    aiPlayer: true
+  });
+
+  logger.info({ sessionId: session.sessionId, aiSide }, '[ai] AI auto-joined successfully');
+
+  // If AI starts, schedule its first turn
+  const rulesState = engine.state.rulesState || {};
+  const turnKey = rulesState.turn || 'p1';
+  if (turnKey === aiSide) {
+    logger.info({ sessionId: session.sessionId, aiSide }, '[ai] AI has first turn, scheduling');
+    await scheduleAiTurn({ io, session, engine });
+  }
 }
 
 exports.setupGameSocketHandlers = function(io) {
@@ -972,6 +1047,9 @@ exports.setupGameSocketHandlers = function(io) {
             data: aiReadyUpdate
           });
         }
+
+        // Ensure AI auto-joins for with_ai games
+        await ensureAiAutoJoin({ io, session });
 
         // Check if both players are connected
         if (connectionData.player1Connected && connectionData.player2Connected) {

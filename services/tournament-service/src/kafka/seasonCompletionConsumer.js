@@ -137,11 +137,21 @@ async function handleSeasonCompleted(payload) {
     return;
   }
 
+  const tournamentMetadata = season.tournament.metadata || {};
+  const gameType = typeof tournamentMetadata === 'string' 
+    ? JSON.parse(tournamentMetadata || '{}').gameType 
+    : tournamentMetadata.gameType;
+  const isWithAi = gameType === 'with_ai' || gameType === 'ai';
+
   const playerCount = season.tournamentPlayers.length;
   const entryFee = Number(season.tournament.entryFee || 0);
-  const potAmount = normalizeMoney(entryFee * playerCount);
+  
+  // For with_ai: potAmount = entryFee × 2 (human + AI)
+  // For normal: potAmount = entryFee × playerCount
+  const potAmount = normalizeMoney(isWithAi ? entryFee * 2 : entryFee * playerCount);
+  
   if (potAmount <= 0) {
-    logger.warn({ seasonId, entryFee, playerCount }, '[seasonCompletion] Pot amount is zero; skipping payout');
+    logger.warn({ seasonId, entryFee, playerCount, isWithAi }, '[seasonCompletion] Pot amount is zero; skipping payout');
     return;
   }
 
@@ -152,16 +162,25 @@ async function handleSeasonCompleted(payload) {
     return;
   }
 
-  const platformFee = normalizeMoney(potAmount * PLATFORM_FEE_PERCENTAGE);
+  // For with_ai: platformFeePercent = 0.10 (10%)
+  // For normal: platformFeePercent = 0.30 (30%)
+  const platformFeePercent = isWithAi ? 0.10 : PLATFORM_FEE_PERCENTAGE;
+  const platformFee = normalizeMoney(potAmount * platformFeePercent);
   const remaining = normalizeMoney(potAmount - platformFee);
 
-  const hasThirdPlace = Boolean(placements.third);
-  const hasSecondPlace = Boolean(placements.second);
+  // For with_ai: single winner only (no second/third place)
+  const hasThirdPlace = !isWithAi && Boolean(placements.third);
+  const hasSecondPlace = !isWithAi && Boolean(placements.second);
   let firstPct = FIRST_PLACE_PERCENTAGE;
   let secondPct = hasThirdPlace ? SECOND_PLACE_PERCENTAGE : (hasSecondPlace ? SECOND_PLACE_PERCENTAGE : 0);
   let thirdPct = hasThirdPlace ? THIRD_PLACE_PERCENTAGE : 0;
 
-  if (!hasThirdPlace && hasSecondPlace) {
+  if (isWithAi) {
+    // Single winner gets all the remaining prize
+    firstPct = 1.0;
+    secondPct = 0;
+    thirdPct = 0;
+  } else if (!hasThirdPlace && hasSecondPlace) {
     const totalPct = FIRST_PLACE_PERCENTAGE + SECOND_PLACE_PERCENTAGE;
     if (totalPct > 0) {
       firstPct = FIRST_PLACE_PERCENTAGE / totalPct;
@@ -179,7 +198,12 @@ async function handleSeasonCompleted(payload) {
     firstAmount = normalizeMoney(firstAmount + remainder);
   }
 
-  const payoutMetadata = { tournamentId, seasonId };
+  const payoutMetadata = { 
+    tournamentId, 
+    seasonId, 
+    gameType: gameType || 'pvp',
+    feePercent: platformFeePercent
+  };
 
   if (platformFee > 0) {
     await transferFunds({
@@ -216,7 +240,7 @@ async function handleSeasonCompleted(payload) {
     toWalletId: winnerWallet.walletId,
     amount: firstAmount,
     description: `Season prize (1st place) for season ${seasonId}`,
-    metadata: { ...payoutMetadata, place: 'first', type: 'season_prize' },
+    metadata: { ...payoutMetadata, place: 'first', type: 'winner_prize' },
     referenceNumber: `PRIZE-${seasonId}-${placements.first}-first`,
     toUserId: placements.first
   });
@@ -317,7 +341,7 @@ async function handleSeasonCompleted(payload) {
   });
 
   logger.info(
-    { seasonId, tournamentId, platformFee, firstAmount, secondAmount, thirdAmount },
+    { seasonId, tournamentId, gameType, isWithAi, platformFee, firstAmount, secondAmount, thirdAmount },
     '[seasonCompletion] Payouts completed'
   );
 

@@ -26,6 +26,30 @@ function safeParseMetadata(value) {
   return {};
 }
 
+function computePrizeDistribution({ gameType, entryFee }) {
+  const fee = Number(entryFee || 0);
+  if (fee <= 0) {
+    return {
+      platformFee: 0,
+      netPrizePool: 0,
+      feePercent: 0
+    };
+  }
+
+  const isWithAi = gameType === 'with_ai' || gameType === 'ai';
+  const feePercent = isWithAi ? 0.10 : 0.30;
+  const potAmount = isWithAi ? fee * 2 : fee * 2; // For with_ai: human + AI entries
+  const platformFee = Number((potAmount * feePercent).toFixed(2));
+  const netPrizePool = Number((potAmount - platformFee).toFixed(2));
+
+  return {
+    platformFee,
+    netPrizePool,
+    feePercent,
+    potAmount
+  };
+}
+
 exports.createSession = async (req, res) => {
   try {
     const { tableId, player1Id, player2Id, metadata } = req.body;
@@ -102,15 +126,21 @@ exports.createSession = async (req, res) => {
     const isAiGame = player1Id === AI_PLAYER_ID || player2Id === AI_PLAYER_ID;
     
     // Enhanced metadata handling for realtime sessions
+    const gameType = isAiGame ? 'with_ai' : (metadata?.gameType || 'pvp');
+    const entryFee = Number(metadata?.entryFee || 0);
+    const platformFeePercent = gameType === 'with_ai' ? 0.10 : 0.30;
+    
     const enhancedMetadata = {
       ...metadata,
       sessionCreated: new Date().toISOString(),
       matchDurationSeconds: metadata?.maxDurationSeconds || 300,
       realTimeEnabled: true,
       // Auto-detect AI games
-      gameType: isAiGame ? 'with_ai' : (metadata?.gameType || 'pvp'),
+      gameType,
       aiPlayerId: isAiGame ? AI_PLAYER_ID : metadata?.aiPlayerId,
-      aiDifficulty: isAiGame ? (metadata?.aiDifficulty || metadata?.ai || 5) : metadata?.aiDifficulty
+      aiDifficulty: isAiGame ? (metadata?.aiDifficulty || metadata?.ai || 5) : metadata?.aiDifficulty,
+      entryFee,
+      platformFeePercent
     };
 
     // Use match start time if available, otherwise use current time
@@ -211,11 +241,25 @@ exports.completeSession = async (req, res) => {
       ...safeParseMetadata(metadata)
     };
 
+    // Compute prize distribution for with_ai games
+    const gameType = mergedMetadata.gameType || 'pvp';
+    const entryFee = Number(mergedMetadata.entryFee || 0);
+    const prizeDistribution = computePrizeDistribution({ gameType, entryFee });
+
+    // Enhance result with prize information
+    const enhancedResult = {
+      ...(typeof result === 'string' ? JSON.parse(result) : result || {}),
+      prizeAmount: prizeDistribution.netPrizePool,
+      netPrizePool: prizeDistribution.netPrizePool,
+      platformFee: prizeDistribution.platformFee,
+      feePercent: prizeDistribution.feePercent
+    };
+
     const updated = await prisma.gameSession.update({
       where: { sessionId },
       data: {
         status: 'completed',
-        result: result || session.result,
+        result: enhancedResult,
         metadata: mergedMetadata,
         endedAt: new Date(),
         updatedAt: new Date(),
