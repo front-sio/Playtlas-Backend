@@ -4,6 +4,8 @@ const logger = require('../utils/logger');
 const { QueueNames } = require('../../../../shared/constants/queueNames');
 const { createQueue, defaultJobOptions } = require('../../../../shared/config/redis');
 
+const AI_PLAYER_ID = process.env.AI_PLAYER_ID || '04a942ce-af5f-4bde-9068-b9e2ee295fbf';
+
 let cleanupQueue;
 
 function getCleanupQueue() {
@@ -24,6 +26,33 @@ function safeParseMetadata(value) {
   }
   if (typeof value === 'object') return value;
   return {};
+}
+
+function computePrizeDistribution({ gameType, entryFee }) {
+  const fee = Number(entryFee || 0);
+  const isWithAi = gameType === 'with_ai' || gameType === 'ai';
+  const feePercent = isWithAi ? 0.10 : 0.30;
+  
+  if (fee <= 0) {
+    return {
+      platformFee: 0,
+      netPrizePool: 0,
+      feePercent,
+      potAmount: 0
+    };
+  }
+
+  // Game sessions are always 1v1, so pot = 2 × entryFee (both players contribute)
+  const potAmount = fee * 2;
+  const platformFee = Number((potAmount * feePercent).toFixed(2));
+  const netPrizePool = Number((potAmount - platformFee).toFixed(2));
+
+  return {
+    platformFee,
+    netPrizePool,
+    feePercent,
+    potAmount
+  };
 }
 
 exports.createSession = async (req, res) => {
@@ -98,19 +127,24 @@ exports.createSession = async (req, res) => {
     }
 
     // Detect AI game automatically
-    const AI_PLAYER_ID = process.env.AI_PLAYER_ID || '04a942ce-af5f-4bde-9068-b9e2ee295fbf';
     const isAiGame = player1Id === AI_PLAYER_ID || player2Id === AI_PLAYER_ID;
     
     // Enhanced metadata handling for realtime sessions
+    const gameType = isAiGame ? 'with_ai' : (metadata?.gameType || 'pvp');
+    const entryFee = Number(metadata?.entryFee || 0);
+    const platformFeePercent = gameType === 'with_ai' ? 0.10 : 0.30;
+    
     const enhancedMetadata = {
       ...metadata,
       sessionCreated: new Date().toISOString(),
       matchDurationSeconds: metadata?.maxDurationSeconds || 300,
       realTimeEnabled: true,
       // Auto-detect AI games
-      gameType: isAiGame ? 'with_ai' : (metadata?.gameType || 'pvp'),
+      gameType,
       aiPlayerId: isAiGame ? AI_PLAYER_ID : metadata?.aiPlayerId,
-      aiDifficulty: isAiGame ? (metadata?.aiDifficulty || metadata?.ai || 5) : metadata?.aiDifficulty
+      aiDifficulty: isAiGame ? (metadata?.aiDifficulty || metadata?.ai || 5) : metadata?.aiDifficulty,
+      entryFee,
+      platformFeePercent
     };
 
     // Use match start time if available, otherwise use current time
@@ -211,11 +245,25 @@ exports.completeSession = async (req, res) => {
       ...safeParseMetadata(metadata)
     };
 
+    // Compute prize distribution for with_ai games
+    const gameType = mergedMetadata.gameType || 'pvp';
+    const entryFee = Number(mergedMetadata.entryFee || 0);
+    const prizeDistribution = computePrizeDistribution({ gameType, entryFee });
+
+    // Enhance result with prize information
+    const enhancedResult = {
+      ...(typeof result === 'string' ? JSON.parse(result) : result || {}),
+      prizeAmount: prizeDistribution.netPrizePool,
+      netPrizePool: prizeDistribution.netPrizePool,
+      platformFee: prizeDistribution.platformFee,
+      feePercent: prizeDistribution.feePercent
+    };
+
     const updated = await prisma.gameSession.update({
       where: { sessionId },
       data: {
         status: 'completed',
-        result: result || session.result,
+        result: JSON.stringify(enhancedResult),
         metadata: mergedMetadata,
         endedAt: new Date(),
         updatedAt: new Date(),
@@ -270,3 +318,6 @@ exports.cancelSession = async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to cancel game session' });
   }
 };
+
+// Export helper for use in other controllers
+exports.computePrizeDistribution = computePrizeDistribution;
