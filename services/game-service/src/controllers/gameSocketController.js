@@ -471,18 +471,29 @@ function checkMatchTimeout(session) {
 
   const maxDurationSeconds = sessionMetadata.maxDurationSeconds || 300;
   
-  // Use consistent timing logic - prefer actual start time, fallback to creation time
-  // Avoid using scheduledTime which might be very old
-  const startTime = sessionMetadata.startTime ? 
-    new Date(sessionMetadata.startTime) : 
-    new Date(session.startedAt || session.createdAt);
+  // FIXED: Use actual game start time, not session creation time
+  let startTime;
+  
+  // Priority 1: Explicit startTime in metadata (set when game actually starts)
+  if (sessionMetadata.startTime) {
+    startTime = new Date(sessionMetadata.startTime);
+  }
+  // Priority 2: startedAt field (when session becomes active)
+  else if (session.startedAt) {
+    startTime = new Date(session.startedAt);
+  }
+  // Priority 3: If no start time, game hasn't started yet - don't timeout
+  else {
+    logger.info({ sessionId: session.sessionId }, 'No start time found - game not started yet');
+    return false;
+  }
     
   const now = new Date();
   const elapsedSeconds = Math.max(0, (now - startTime) / 1000);
 
   // Add safety check for invalid dates
   if (!startTime || isNaN(startTime.getTime())) {
-    logger.warn({ sessionId: session.sessionId }, 'Invalid start time detected, defaulting to not expired');
+    logger.warn({ sessionId: session.sessionId }, 'Invalid start time detected');
     return false;
   }
 

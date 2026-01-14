@@ -95,8 +95,14 @@ class SeasonMatchmakingController {
         ]
       };
       
+      // FIXED: Show both scheduled AND in_progress matches by default
       if (status) {
         whereClause.status = status;
+      } else {
+        // Show matches that are ready to play or currently playing
+        whereClause.status = {
+          in: ['scheduled', 'in_progress']
+        };
       }
       
       const matches = await prisma.match.findMany({
@@ -127,12 +133,30 @@ class SeasonMatchmakingController {
             const scheduledTime = match.scheduledTime ? new Date(match.scheduledTime) : new Date();
             const timeDiff = scheduledTime.getTime() - now.getTime();
             
+            // FIXED: More permissive canPlay logic
+            const canPlay = (
+              (timeDiff <= 60000) && // Within 1 minute of scheduled time or past it
+              (match.status === 'scheduled' || match.status === 'in_progress') &&
+              !match.winnerId  // Not finished yet
+            );
+            
+            // Better status display
+            let displayStatus = 'upcoming';
+            if (match.status === 'in_progress') {
+              displayStatus = 'playing';
+            } else if (match.winnerId) {
+              displayStatus = 'completed';
+            } else if (canPlay) {
+              displayStatus = 'ready';
+            }
+            
             return {
               ...match,
               player1,
               player2,
               timeUntilStart: timeDiff > 0 ? Math.ceil(timeDiff / 1000) : 0,
-              canPlay: timeDiff <= 0 && match.status === 'scheduled',
+              canPlay,
+              displayStatus,
               isCurrentPlayer: match.player1Id === playerId || match.player2Id === playerId
             };
           } catch (error) {
