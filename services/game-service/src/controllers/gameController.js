@@ -262,7 +262,7 @@ exports.completeSession = async (req, res) => {
       where: { sessionId },
       data: {
         status: 'completed',
-        result: enhancedResult,
+        result: JSON.stringify(enhancedResult),
         metadata: mergedMetadata,
         endedAt: new Date(),
         updatedAt: new Date(),

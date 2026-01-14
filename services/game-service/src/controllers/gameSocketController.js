@@ -411,7 +411,7 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
     player1Score,
     player2Score,
     prizeAmount,
-    netPrizePool,
+    netPrizePool: prizeDistribution.netPrizePool,
     platformFee,
     feePercent: platformFeePercent
   };
@@ -420,7 +420,7 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
     where: { sessionId },
     data: {
       status: 'completed',
-      result: enhancedResult,
+      result: JSON.stringify(enhancedResult),
       metadata: mergeSessionMetadata(session, metadata),
       endedAt: new Date()
     }
