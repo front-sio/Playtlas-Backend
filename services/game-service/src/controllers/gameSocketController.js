@@ -406,7 +406,8 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
   let platformFee = 0;
   
   if (entryFee > 0) {
-    const potAmount = gameType === 'with_ai' ? entryFee * 2 : entryFee * 2;
+    // Game sessions are always 1v1, so pot = 2 × entryFee (both players contribute)
+    const potAmount = entryFee * 2;
     platformFee = Number((potAmount * platformFeePercent).toFixed(2));
     netPrizePool = Number((potAmount - platformFee).toFixed(2));
     prizeAmount = netPrizePool; // Single winner gets full prize

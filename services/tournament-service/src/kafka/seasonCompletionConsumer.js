@@ -240,7 +240,7 @@ async function handleSeasonCompleted(payload) {
     toWalletId: winnerWallet.walletId,
     amount: firstAmount,
     description: `Season prize (1st place) for season ${seasonId}`,
-    metadata: { ...payoutMetadata, place: 'first', type: 'winner_prize' },
+    metadata: { ...payoutMetadata, place: 'first', type: 'season_prize' },
     referenceNumber: `PRIZE-${seasonId}-${placements.first}-first`,
     toUserId: placements.first
   });

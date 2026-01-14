@@ -38,7 +38,8 @@ function computePrizeDistribution({ gameType, entryFee }) {
 
   const isWithAi = gameType === 'with_ai' || gameType === 'ai';
   const feePercent = isWithAi ? 0.10 : 0.30;
-  const potAmount = isWithAi ? fee * 2 : fee * 2; // For with_ai: human + AI entries
+  // Game sessions are always 1v1, so pot = 2 × entryFee (both players contribute)
+  const potAmount = fee * 2;
   const platformFee = Number((potAmount * feePercent).toFixed(2));
   const netPrizePool = Number((potAmount - platformFee).toFixed(2));
 
