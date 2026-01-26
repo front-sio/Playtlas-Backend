@@ -24,6 +24,7 @@ model Deposit {
   phoneNumber         String?   @db.VarChar(32)
   referenceNumber     String    @unique @db.VarChar(100)
   externalReference   String?   @db.VarChar(200)
+  providerTid         String?   @db.VarChar(64)
   transactionMessage  String?   @db.Text
   status              String    @default("pending") @db.VarChar(32)
   expiresAt           DateTime?
@@ -35,6 +36,7 @@ model Deposit {
   approvedBy          String?   @db.Uuid
   approvedAt          DateTime?
 
+  @@index([providerTid])
   @@map("deposits")
 }
 
@@ -198,4 +200,33 @@ model DailyLimit {
   @@unique([userId, date])
   @@index([userId])
   @@map("daily_limits")
+}
+
+enum MobileMoneyMessageStatus {
+  NEW
+  LINKED
+  APPROVED
+  REJECTED
+  DUPLICATE
+}
+
+model MobileMoneyMessage {
+  messageId           String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider            String                    @db.VarChar(20) // AIRTEL, VODACOM, TIGO, etc
+  rawText             String                    @db.Text
+  tid                 String                    @db.VarChar(50) // Normalized TID
+  amount              Decimal?                  @db.Decimal(12, 2)
+  fee                 Decimal?                  @db.Decimal(12, 2)
+  msisdn              String?                   @db.VarChar(32) // Phone number if present
+  direction           String?                   @db.VarChar(10) // IN/OUT if detectable
+  receivedAt          DateTime?
+  createdAt           DateTime                  @default(now())
+  linkedDepositId     String?                   @db.Uuid
+  status              MobileMoneyMessageStatus  @default(NEW)
+  
+  @@unique([provider, tid])
+  @@index([tid])
+  @@index([status])
+  @@index([linkedDepositId])
+  @@map("mobile_money_messages")
 }

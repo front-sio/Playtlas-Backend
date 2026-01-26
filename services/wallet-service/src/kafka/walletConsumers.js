@@ -63,14 +63,22 @@ async function handleWithdrawalApproved(_topic, payload) {
   }
 
   try {
+    const withdrawalSource = String(payload.source || payload.withdrawalSource || payload.metadata?.source || '').toLowerCase();
+    const debitRevenue = withdrawalSource === 'revenue';
+
     // Debit the wallet
+    const updateData = {
+      balance: {
+        decrement: parseFloat(amount)
+      }
+    };
+    if (debitRevenue) {
+      updateData.revenueBalance = { decrement: parseFloat(amount) };
+    }
+
     await prisma.wallet.update({
       where: { walletId },
-      data: {
-        balance: {
-          decrement: parseFloat(amount)
-        }
-      }
+      data: updateData
     });
 
     logger.info({ walletId, amount, withdrawalId, referenceNumber }, '[walletConsumers] Wallet debited for withdrawal');
@@ -224,6 +232,9 @@ async function handleTournamentMatchCompleted(_topic, payload) {
       where: { walletId },
       data: {
         balance: {
+          increment: parseFloat(winnerPrize)
+        },
+        revenueBalance: {
           increment: parseFloat(winnerPrize)
         }
       }

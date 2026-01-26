@@ -1,4 +1,4 @@
-const { completeMatchAndProgress } = require('../controllers/matchmakingController');
+const { completeMatchAndProgress, evaluateSeasonCompletion } = require('../controllers/matchmakingController');
 
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.MATCH_DURATION_SECONDS || 300);
 const MATCH_TIMEOUT_CHECK_INTERVAL = Number(process.env.MATCH_TIMEOUT_CHECK_INTERVAL || 15000);
@@ -115,18 +115,23 @@ async function handleTimeout(io, prisma, match) {
     return;
   }
 
-  await prisma.match.update({
-    where: { matchId: match.matchId },
-    data: {
-      status: 'cancelled',
-      metadata: buildCancelMetadata('match_timeout')
-    }
-  });
+  try {
+    await prisma.match.update({
+      where: { matchId: match.matchId },
+      data: {
+        status: 'cancelled',
+        metadata: buildCancelMetadata('match_timeout')
+      }
+    });
 
-  io.to(`match:${match.matchId}`).emit('match:cancelled', {
-    matchId: match.matchId,
-    reason: 'Match time expired'
-  });
+    io.to(`match:${match.matchId}`).emit('match:cancelled', {
+      matchId: match.matchId,
+      reason: 'Match time expired'
+    });
+    await evaluateSeasonCompletion(match);
+  } catch (error) {
+    console.error('[matchTimeouts] Error in handleTimeout:', error);
+  }
 }
 
 function startMatchTimeoutMonitor(io, prisma) {
@@ -142,7 +147,7 @@ function startMatchTimeoutMonitor(io, prisma) {
       const now = Date.now();
       const candidates = await prisma.match.findMany({
         where: {
-          status: { in: ['scheduled', 'ready', 'in-progress'] },
+          status: { in: ['scheduled', 'ready', 'in_progress'] },
           scheduledTime: { not: null }
         },
         take: 200
@@ -156,6 +161,12 @@ function startMatchTimeoutMonitor(io, prisma) {
         const endTime = new Date(baseTime).getTime() + durationMs;
         if (now <= endTime) continue;
 
+        // Grace period for scheduled matches (2 minutes)
+        if (match.status === 'scheduled') {
+          const gracePeriodMs = 2 * 60 * 1000;
+          if (now <= endTime + gracePeriodMs) continue;
+        }
+
         if (!match.player1Ready && !match.player2Ready) {
           await prisma.match.update({
             where: { matchId: match.matchId },
@@ -168,6 +179,7 @@ function startMatchTimeoutMonitor(io, prisma) {
             matchId: match.matchId,
             reason: 'No players ready'
           });
+          await evaluateSeasonCompletion(match);
           continue;
         }
 

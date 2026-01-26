@@ -6,6 +6,7 @@ const helmet = require('helmet');
 const agentRoutes = require('./routes/agentRoutes');
 const logger = require('./utils/logger');
 const { startAgentConsumers } = require('./kafka/agentConsumer');
+const { DailyEarningsJob } = require('./jobs/DailyEarningsJob');
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const app = express();
@@ -48,5 +49,14 @@ app.listen(PORT, () => {
 startAgentConsumers().catch((err) => {
   logger.error({ err }, '[agent-service] Failed to start Kafka consumers');
 });
+
+if (process.env.DISABLE_DAILY_EARNINGS_JOB !== 'true') {
+  try {
+    const dailyJob = new DailyEarningsJob();
+    dailyJob.start();
+  } catch (error) {
+    logger.error({ err: error }, '[agent-service] Failed to start daily earnings job');
+  }
+}
 
 module.exports = app;

@@ -3,6 +3,7 @@ const { prisma } = require('../config/db');
 const logger = require('../utils/logger');
 const { publishEvent, Topics } = require('../../../../shared/events');
 const { emitSeasonUpdate } = require('../utils/socketEmitter');
+// AI logic removed
 
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 4);
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
@@ -19,6 +20,7 @@ const startFixtureGenerator = () => {
         select: {
           seasonId: true,
           tournamentId: true,
+          clubId: true,
           startTime: true,
           joiningClosed: true,
           matchesGenerated: true
@@ -47,9 +49,9 @@ const startFixtureGenerator = () => {
         if (!season.matchesGenerated && now >= fixtureTime) {
           const tournament = await prisma.tournament.findUnique({
             where: { tournamentId: season.tournamentId },
-            select: { tournamentId: true, status: true, stage: true, matchDuration: true, metadata: true }
+            select: { tournamentId: true, clubId: true, status: true, stage: true, matchDuration: true, metadata: true, entryFee: true }
           });
-          if (!tournament || tournament.status !== 'active') {
+          if (!tournament || !['active', 'stopped'].includes(tournament.status)) {
             continue;
           }
 
@@ -61,11 +63,14 @@ const startFixtureGenerator = () => {
           const tournamentStage =
             tournament.stage && tournament.stage !== 'registration'
               ? tournament.stage
-              : 'group';
+              : (activePlayers.length < 10 ? 'final' : 'group');
           const matchDurationSeconds = Number(tournament.matchDuration || DEFAULT_MATCH_DURATION_SECONDS);
           const seasonStartTime = season.startTime ? season.startTime.toISOString() : undefined;
           const gameType = tournament?.metadata?.gameType || 'multiplayer';
-          const aiDifficulty = tournament?.metadata?.aiDifficulty ?? null;
+          const aiSettings = gameType === 'with_ai' ? computeAiSettings(tournament?.entryFee) : null;
+          const aiDifficulty = tournament?.metadata?.aiDifficulty ?? aiSettings?.aiDifficulty ?? null;
+          const level = tournament?.metadata?.level ?? aiSettings?.level ?? null;
+          const aiRating = tournament?.metadata?.aiRating ?? aiSettings?.aiRating ?? null;
           const aiPlayerId = gameType === 'with_ai' ? AI_PLAYER_ID : null;
 
           if (activePlayers.length < 2) {
@@ -91,12 +96,15 @@ const startFixtureGenerator = () => {
             await publishEvent(Topics.GENERATE_MATCHES, {
               tournamentId: season.tournamentId,
               seasonId: season.seasonId,
+              clubId: season.clubId || tournament?.clubId || null,
               stage: tournamentStage,
               players: activePlayers,
               matchDurationSeconds,
               startTime: seasonStartTime,
               gameType,
               aiDifficulty,
+              aiRating,
+              level,
               aiPlayerId
             }).catch((eventErr) => {
               logger.error(
@@ -107,33 +115,44 @@ const startFixtureGenerator = () => {
             continue;
           }
 
-          // Only activate the season at fixture time.
+          // Mark season pending while fixtures are generated.
           await prisma.season.update({
             where: { seasonId: season.seasonId },
-            data: { status: 'active' }
+            data: { status: 'pending', matchesGenerated: false, errorReason: null }
           });
 
           try {
             await publishEvent(Topics.GENERATE_MATCHES, {
               tournamentId: season.tournamentId,
               seasonId: season.seasonId,
+              clubId: season.clubId || tournament?.clubId || null,
               stage: tournamentStage,
               players: activePlayers,
               matchDurationSeconds,
+              entryFee: Number(tournament?.entryFee || 0),
               startTime: seasonStartTime,
               gameType,
               aiDifficulty,
+              aiRating,
+              level,
               aiPlayerId
             });
             logger.info(
               { seasonId: season.seasonId, tournamentId: season.tournamentId },
-              '[fixtureGenerator] Published GENERATE_MATCHES event'
+              '[fixtureGenerator] Published GENERATE_MATCHES event (season pending activation)'
             );
           } catch (eventErr) {
             logger.error(
               { err: eventErr, seasonId: season.seasonId },
               '[fixtureGenerator] Failed to publish GENERATE_MATCHES event'
             );
+            await prisma.season.update({
+              where: { seasonId: season.seasonId },
+              data: {
+                status: 'error',
+                errorReason: eventErr?.message || 'Failed to publish GENERATE_MATCHES'
+              }
+            });
           }
         }
       }

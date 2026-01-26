@@ -9,6 +9,7 @@ const gameRoutes = require('./routes/gameRoutes');
 const logger = require('./utils/logger');
 const { startGameSessionCleanupWorker } = require('./jobs/gameSessionCleanupWorker');
 const { setupGameSocketHandlers, startTimeoutChecker } = require('./controllers/gameSocketController');
+const { initializeAuthoritativeSocket } = require('./controllers/authoritativeSocketController');
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const app = express();
@@ -71,6 +72,9 @@ const io = new Server(httpServer, {
 
 // Setup game socket handlers
 setupGameSocketHandlers(io);
+
+// Setup authoritative physics socket handlers
+initializeAuthoritativeSocket(io);
 
 // Start periodic timeout checker for expired matches
 startTimeoutChecker(io);

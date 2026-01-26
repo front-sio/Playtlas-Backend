@@ -38,7 +38,7 @@ function initializeAuthoritativeSocket(io) {
 
         // Get match from database
         const match = await prisma.match.findUnique({
-          where: { id: matchId }
+          where: { matchId: matchId }
         });
 
         if (!match) {
@@ -65,10 +65,14 @@ function initializeAuthoritativeSocket(io) {
         if (!game) {
           const isAiGame = match.player2Id === AI_PLAYER_ID;
           
+          const rawDifficulty = Number(match.metadata?.aiDifficulty ?? 50);
+          const aiDifficulty = Number.isFinite(rawDifficulty)
+            ? Math.max(1, Math.min(50, Math.round(rawDifficulty)))
+            : 50;
           game = new ServerGameManager({
             matchId,
             gameType: isAiGame ? 'with_ai' : 'multiplayer',
-            aiDifficulty: match.metadata?.aiDifficulty || 3
+            aiDifficulty: aiDifficulty
           });
 
           activeGames.set(matchId, game);
@@ -117,7 +121,7 @@ function initializeAuthoritativeSocket(io) {
 
         // Get match
         const match = await prisma.match.findUnique({
-          where: { id: matchId }
+          where: { matchId: matchId }
         });
 
         if (!match) {
@@ -306,7 +310,7 @@ function scheduleAiTurn(io, matchId, game, thinkTime) {
       // Check if game ended
       if (result.result.gameOver) {
         const match = await prisma.match.findUnique({
-          where: { id: matchId }
+          where: { matchId: matchId }
         });
         if (match) {
           await handleGameEnd(io, matchId, game, match);
@@ -366,11 +370,13 @@ async function handleGameEnd(io, matchId, game, match) {
 
     // Update match
     await prisma.match.update({
-      where: { id: matchId },
+      where: { matchId: matchId },
       data: {
         status: 'completed',
         winnerId: winnerPlayerId,
         completedAt: new Date(),
+        player1Score: gameState.p1Score || 0,
+        player2Score: gameState.p2Score || 0,
         metadata: {
           ...match.metadata,
           gameResult: {
@@ -392,16 +398,15 @@ async function handleGameEnd(io, matchId, game, match) {
       finalState: gameState
     });
 
-    // Publish match completed event
-    await publishEvent(Topics.MATCH_COMPLETED, {
-      matchId,
-      winnerId: winnerPlayerId,
-      player1Id: match.player1Id,
-      player2Id: match.player2Id,
-      betAmount: match.betAmount,
-      gameType: match.gameType,
-      timestamp: Date.now()
-    });
+    if (winnerPlayerId) {
+      await publishEvent(Topics.MATCH_RESULT, {
+        matchId,
+        winnerId: winnerPlayerId,
+        player1Score: gameState.p1Score,
+        player2Score: gameState.p2Score,
+        reason: 'completed'
+      });
+    }
 
     // Clean up after delay
     setTimeout(() => {

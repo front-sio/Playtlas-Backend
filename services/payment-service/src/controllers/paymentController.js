@@ -1,7 +1,8 @@
 const paymentProcessingService = require('../services/paymentProcessing.js');
 const { prisma } = require('../config/db.js');
 const { logger } = require('../utils/logger.js');
-const { sanitizePhoneNumber } = require('../utils/security.js');
+const { sanitizePhoneNumber, verifyWebhookSignature } = require('../utils/security.js');
+const MobileMoneyMessageService = require('../services/mobileMoneyMessageService.js');
 
 const ADMIN_ROLES = new Set([
   'admin',
@@ -87,7 +88,7 @@ exports.getDepositStatus = async (req, res) => {
 
 exports.initiateWithdrawal = async (req, res) => {
   try {
-    const { walletId, methodId, amount, paymentMethod, phoneNumber, description } = req.body;
+    const { walletId, methodId, amount, paymentMethod, phoneNumber, description, withdrawalSource } = req.body;
     const userId = req.user?.userId || req.body.userId;
 
     // Server-side validation
@@ -118,6 +119,15 @@ exports.initiateWithdrawal = async (req, res) => {
     // Validate description length
     if (description && description.length > 500) {
       return res.status(400).json({ error: 'Description too long (max 500 characters)' });
+    }
+
+    let normalizedSource = null;
+    if (withdrawalSource) {
+      const sourceValue = String(withdrawalSource).toLowerCase();
+      if (!['deposit', 'revenue'].includes(sourceValue)) {
+        return res.status(400).json({ error: 'Invalid withdrawalSource. Use deposit or revenue.' });
+      }
+      normalizedSource = sourceValue;
     }
 
     // Validate wallet exists and belongs to the user via wallet service
@@ -213,7 +223,8 @@ exports.initiateWithdrawal = async (req, res) => {
       walletId,
       methodId: finalMethodId,
       amount: parseFloat(amount),
-      metadata: { ip: req.ip, userAgent: req.get('user-agent'), description },
+      metadata: { ip: req.ip, userAgent: req.get('user-agent'), description, withdrawalSource: normalizedSource },
+      withdrawalSource: normalizedSource,
       role: req.user?.role
     });
 
@@ -626,6 +637,7 @@ exports.listAdminTransactions = async (req, res) => {
             amount: true,
             fee: true,
             provider: true,
+            providerTid: true,
             phoneNumber: true,
             status: true,
             createdAt: true,
@@ -733,6 +745,7 @@ exports.listAdminTransactions = async (req, res) => {
           amount: true,
           fee: true,
           provider: true,
+          providerTid: true,
           phoneNumber: true,
           status: true,
           createdAt: true,
@@ -876,6 +889,21 @@ exports.handleCallback = async (req, res) => {
     const { provider } = req.params;
     const payload = req.body;
     const signature = req.headers['x-signature'];
+    const secret = process.env.WEBHOOK_SECRET;
+
+    if (!signature) {
+      return res.status(401).json({ error: 'Missing webhook signature' });
+    }
+    if (!secret) {
+      logger.error('WEBHOOK_SECRET is not configured');
+      return res.status(500).json({ error: 'Webhook secret not configured' });
+    }
+
+    const verifyPayload = req.rawBody ? req.rawBody.toString('utf8') : payload;
+    const isValid = verifyWebhookSignature(verifyPayload, signature, secret);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
 
     await paymentProcessingService.processDepositCallback({
       provider,
@@ -1198,5 +1226,247 @@ exports.approveDeposit = async (req, res) => {
   } catch (error) {
     logger.error('Deposit approval error:', error);
     res.status(400).json({ error: error.message });
+  }
+};
+
+exports.getDepositByTid = async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    const { tid } = req.query;
+
+    if (!tid) {
+      return res.status(400).json({ error: 'TID parameter is required' });
+    }
+
+    const normalizedTid = String(tid).toUpperCase().trim();
+
+    let deposit = await prisma.deposit.findFirst({
+      where: { providerTid: normalizedTid }
+    });
+
+    if (!deposit) {
+      deposit = await prisma.deposit.findFirst({
+        where: {
+          transactionMessage: {
+            contains: normalizedTid,
+            mode: 'insensitive'
+          }
+        }
+      });
+    }
+
+    if (!deposit) {
+      return res.status(404).json({ error: 'Deposit not found for provided TID' });
+    }
+
+    res.json({ success: true, data: deposit });
+  } catch (error) {
+    logger.error('Get deposit by TID error:', error);
+    res.status(500).json({ error: 'Failed to fetch deposit by TID' });
+  }
+};
+
+exports.approveDepositByTid = async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    const { tid, transactionMessage } = req.body;
+    const adminId = req.user?.userId || req.body.adminId;
+
+    if (!tid) {
+      return res.status(400).json({ error: 'TID is required' });
+    }
+
+    const normalizedTid = String(tid).toUpperCase().trim();
+
+    let deposit = await prisma.deposit.findFirst({
+      where: { providerTid: normalizedTid }
+    });
+
+    if (!deposit) {
+      deposit = await prisma.deposit.findFirst({
+        where: {
+          transactionMessage: {
+            contains: normalizedTid,
+            mode: 'insensitive'
+          }
+        }
+      });
+    }
+
+    if (!deposit) {
+      return res.status(404).json({ error: 'Deposit not found for provided TID' });
+    }
+
+    if (!deposit.providerTid) {
+      await prisma.deposit.update({
+        where: { depositId: deposit.depositId },
+        data: { providerTid: normalizedTid }
+      });
+    }
+
+    const finalMessage = transactionMessage || deposit.transactionMessage || null;
+    let tidValidation = null;
+    try {
+      tidValidation = await MobileMoneyMessageService.approveDepositWithTid(
+        deposit.depositId,
+        adminId,
+        normalizedTid,
+        finalMessage
+      );
+    } catch (validationError) {
+      logger.warn({ err: validationError, tid: normalizedTid, depositId: deposit.depositId }, 'TID validation failed');
+    }
+
+    const result = await paymentProcessingService.approveDeposit({
+      depositId: deposit.depositId,
+      adminId,
+      transactionMessage: finalMessage
+    });
+
+    res.json({
+      success: true,
+      data: result,
+      depositId: deposit.depositId,
+      tidValidation
+    });
+  } catch (error) {
+    logger.error('Approve deposit by TID error:', error);
+    res.status(400).json({ error: error.message || 'Failed to approve deposit by TID' });
+  }
+};
+
+// TID-based approval endpoints
+
+exports.storeSmsMessage = async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    
+    const { rawText, linkedDepositId } = req.body;
+    
+    if (!rawText) {
+      return res.status(400).json({ error: 'SMS message text is required' });
+    }
+
+    const result = await MobileMoneyMessageService.storeMessage(rawText, linkedDepositId);
+    res.json(result);
+  } catch (error) {
+    logger.error('Store SMS message error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+exports.searchByTid = async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    
+    const { tid } = req.query;
+    
+    if (!tid) {
+      return res.status(400).json({ error: 'TID parameter is required' });
+    }
+
+    const result = await MobileMoneyMessageService.searchByTid(tid);
+    res.json(result);
+  } catch (error) {
+    logger.error('Search by TID error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+exports.attachMessageToDeposit = async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    
+    const { depositId } = req.params;
+    const { tid, messageId } = req.body;
+    const adminId = req.user?.userId;
+
+    if (!depositId) {
+      return res.status(400).json({ error: 'Deposit ID is required' });
+    }
+
+    if (!tid && !messageId) {
+      return res.status(400).json({ error: 'Either TID or message ID is required' });
+    }
+
+    let result;
+    if (messageId) {
+      result = await MobileMoneyMessageService.attachToDeposit(messageId, depositId, adminId);
+    } else {
+      result = await MobileMoneyMessageService.attachByTid(tid, depositId, adminId);
+    }
+
+    res.json(result);
+  } catch (error) {
+    logger.error('Attach message to deposit error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+exports.approveDepositWithTid = async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    
+    const { depositId } = req.params;
+    const { tid, transactionMessage } = req.body;
+    const adminId = req.user?.userId;
+
+    // First validate with TID
+    const tidValidationResult = await MobileMoneyMessageService.approveDepositWithTid(
+      depositId, 
+      adminId, 
+      tid, 
+      transactionMessage
+    );
+
+    // Then proceed with normal approval process
+    const approvalResult = await paymentProcessingService.approveDeposit({
+      depositId,
+      adminId,
+      transactionMessage
+    });
+
+    res.json({
+      success: true,
+      data: approvalResult,
+      tidValidation: tidValidationResult,
+      message: 'Deposit approved with TID validation'
+    });
+  } catch (error) {
+    logger.error('Approve deposit with TID error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+exports.listSmsMessages = async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    
+    const options = {
+      page: parseInt(req.query.page) || 1,
+      limit: parseInt(req.query.limit) || 20,
+      status: req.query.status || null,
+      provider: req.query.provider || null,
+      tid: req.query.tid || null,
+      hasLinkedDeposit: req.query.hasLinkedDeposit ? req.query.hasLinkedDeposit === 'true' : null
+    };
+
+    const result = await MobileMoneyMessageService.listMessages(options);
+    res.json(result);
+  } catch (error) {
+    logger.error('List SMS messages error:', error);
+    res.status(500).json({ error: 'Failed to list SMS messages' });
+  }
+};
+
+exports.getSmsMessageStats = async (req, res) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+    
+    const result = await MobileMoneyMessageService.getMessageStats();
+    res.json(result);
+  } catch (error) {
+    logger.error('Get SMS message stats error:', error);
+    res.status(500).json({ error: 'Failed to get SMS message stats' });
   }
 };

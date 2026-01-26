@@ -9,6 +9,21 @@ const logger = require('./utils/logger');
 
 const app = express();
 const PORT = process.env.PORT || 3008;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+
+const parseOrigins = (value) => (value || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+const allowedOrigins = parseOrigins(process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '');
+const DEFAULT_DEV_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+const getDefaultOrigins = () => (NODE_ENV === 'production' ? [] : DEFAULT_DEV_ORIGINS);
+const resolveCorsOrigin = (origin, callback) => {
+  const targetOrigins = allowedOrigins.length > 0 ? allowedOrigins : getDefaultOrigins();
+  if (!origin) return callback(null, true);
+  if (targetOrigins.includes('*') || targetOrigins.includes(origin)) return callback(null, true);
+  return callback(new Error('Not allowed by CORS'));
+};
 
 // Trust proxy headers from the gateway/load balancer.
 app.set('trust proxy', 1);
@@ -16,7 +31,7 @@ app.set('trust proxy', 1);
 // Security middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: resolveCorsOrigin,
   credentials: true
 }));
 
@@ -33,7 +48,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Logging
-if (process.env.NODE_ENV === 'development') {
+if (NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 

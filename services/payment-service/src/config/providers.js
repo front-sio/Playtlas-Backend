@@ -1,11 +1,13 @@
 // Payment provider configurations
 // This centralizes payment provider information for security and consistency
 
+const isEnabled = (value) => ['true', '1', 'yes', 'y'].includes(String(value || '').toLowerCase());
+
 const providers = {
   airtel: {
     name: 'Airtel Money',
     code: 'airtel',
-    lipaNumber: process.env.AIRTEL_LIPA_NUMBER || '1234567',
+    lipaNumber: String(process.env.AIRTEL_LIPA_NUMBER || '').trim(),
     instructions: `
 Airtel Money (USSD)
 1. Piga *150*60# kwenye simu yako
@@ -21,7 +23,7 @@ My Airtel App
 4. Weka kiasi cha kulipa: {amount} TSH na thibitisha kwa PIN yako
 5. Rudia hapa na bonyeza "Payment Sent - Confirm"
     `,
-    enabled: true,
+    enabled: isEnabled(process.env.AIRTEL_ENABLED),
     minAmount: 1000,
     maxAmount: 5000000,
     fee: 0, // Withdrawal fee
@@ -30,7 +32,7 @@ My Airtel App
   mpesa: {
     name: 'M-Pesa',
     code: 'mpesa',
-    lipaNumber: process.env.MPESA_SHORTCODE || '123456',
+    lipaNumber: String(process.env.MPESA_SHORTCODE || '').trim(),
     instructions: `
 1. Open M-Pesa on your phone
 2. Select "Lipa na M-Pesa Online"
@@ -39,7 +41,7 @@ My Airtel App
 5. Confirm with your M-Pesa PIN
 6. Return here and click "Payment Sent - Confirm"
     `,
-    enabled: true,
+    enabled: isEnabled(process.env.MPESA_ENABLED),
     minAmount: 1000,
     maxAmount: 5000000,
     fee: 0,
@@ -48,7 +50,7 @@ My Airtel App
   tigo: {
     name: 'Mixx by Yas',
     code: 'yas',
-    lipaNumber: process.env.TIGO_LIPA_NUMBER || process.env.TIGO_PESA_LIPA || '000000',
+    lipaNumber: String(process.env.TIGO_LIPA_NUMBER || process.env.TIGO_PESA_LIPA || '').trim(),
     instructions: `
 1. Open Mixx by Yas app or dial *150#
 2. Select "Payment" option
@@ -57,7 +59,7 @@ My Airtel App
 5. Confirm the transaction
 6. Return here and click "Payment Sent - Confirm"
     `,
-    enabled: true,
+    enabled: isEnabled(process.env.TIGO_ENABLED),
     minAmount: 1000,
     maxAmount: 5000000,
     fee: 0,
@@ -66,7 +68,7 @@ My Airtel App
   halopesa: {
     name: 'HaloPesa',
     code: 'halopesa',
-    lipaNumber: process.env.HALOPESA_LIPA_NUMBER || '000000',
+    lipaNumber: String(process.env.HALOPESA_LIPA_NUMBER || '').trim(),
     instructions: `
 1. Open HaloPesa app
 2. Select "Transfer" or "Pay"
@@ -75,7 +77,7 @@ My Airtel App
 5. Confirm transaction
 6. Return here and click "Payment Sent - Confirm"
     `,
-    enabled: true,
+    enabled: isEnabled(process.env.HALOPESA_ENABLED),
     minAmount: 1000,
     maxAmount: 5000000,
     fee: 0,
@@ -85,11 +87,15 @@ My Airtel App
 
 function getProvider(code) {
   if (!code) return null;
-  return providers[code.toLowerCase()];
+  const provider = providers[code.toLowerCase()];
+  if (!provider) return null;
+  if (!provider.enabled) return null;
+  if (!provider.lipaNumber) return null;
+  return provider;
 }
 
 function getEnabledProviders() {
-  return Object.values(providers).filter(p => p.enabled);
+  return Object.values(providers).filter(p => p.enabled && p.lipaNumber);
 }
 
 function getProviderInstructions(code, amount) {

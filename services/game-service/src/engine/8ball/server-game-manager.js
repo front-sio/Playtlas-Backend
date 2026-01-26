@@ -19,7 +19,17 @@ class ServerGameManager {
   constructor(matchConfig) {
     this.matchId = matchConfig.matchId;
     this.gameType = matchConfig.gameType || 'with_ai'; // 'with_ai' or 'multiplayer'
-    this.aiDifficulty = matchConfig.aiDifficulty || 3;
+    const rawDifficulty = Number(matchConfig.aiDifficulty ?? 8);
+    
+    // For tournament games, use more controlled AI difficulty
+    // Free play can have higher levels, but tournaments should be fair
+    const isTournamentMatch = Boolean(matchConfig.tournamentId);
+    const maxDifficulty = isTournamentMatch ? 25 : 100;
+    const defaultDifficulty = isTournamentMatch ? 8 : 12;
+    
+    this.aiDifficulty = Number.isFinite(rawDifficulty)
+      ? Math.max(1, Math.min(maxDifficulty, Math.round(rawDifficulty)))
+      : defaultDifficulty;
     
     // Initialize components
     this.table = new TableGeometry();
@@ -198,7 +208,10 @@ class ServerGameManager {
 
   async runPhysicsSimulation() {
     const MAX_FRAMES = 600; // 5 seconds at 120fps
+    const CAPTURE_STRIDE = 3; // sample every 3 frames
+    const MAX_SNAPSHOTS = 240;
     let frames = 0;
+    const snapshots = [];
 
     this.physics.clearContactEvents();
 
@@ -206,6 +219,13 @@ class ServerGameManager {
     while (!this.physics.isComplete() && frames < MAX_FRAMES) {
       this.physics.updatePhysics();
       frames++;
+      if (frames % CAPTURE_STRIDE === 0 && snapshots.length < MAX_SNAPSHOTS) {
+        snapshots.push(this.balls.map((ball) => ({
+          id: ball.id,
+          active: ball.active,
+          position: { x: ball.position.x, y: ball.position.y }
+        })));
+      }
     }
 
     if (frames >= MAX_FRAMES) {
@@ -253,6 +273,9 @@ class ServerGameManager {
       firstContact,
       cushionHits: Array.from(cushionHits),
       frames,
+      snapshots,
+      frameStride: CAPTURE_STRIDE,
+      frameTimeMs: 16,
       contactEvents
     };
   }
@@ -416,6 +439,9 @@ class ServerGameManager {
       stateHash: stateHash,
       executionTime: Date.now() - startTime,
       frames: rulesResult.frames,
+      snapshots: rulesResult.snapshots,
+      frameStride: rulesResult.frameStride,
+      frameTimeMs: rulesResult.frameTimeMs,
       timestamp: Date.now()
     };
   }

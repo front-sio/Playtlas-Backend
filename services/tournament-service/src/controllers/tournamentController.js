@@ -3,8 +3,10 @@ const logger = require('../utils/logger');
 const axios = require('axios');
 const { publishEvent, Topics } = require('../../../../shared');
 const { ensureTournamentSchedule, scheduleTournamentStart, cancelTournamentSchedule } = require('../jobs/schedulerQueue');
+// Removed AI settings logic
 
 const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://payment-service:3003';
+const MATCHMAKING_SERVICE_URL = process.env.MATCHMAKING_SERVICE_URL || 'http://matchmaking-service:3009';
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 4);
 const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 30);
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
@@ -25,6 +27,7 @@ function getSeasonJoiningCloseTime(seasonStartTime) {
 function buildTournamentSnapshot(tournament, extra = {}) {
   return {
     tournamentId: tournament.tournamentId,
+    clubId: tournament.clubId,
     name: tournament.name,
     description: tournament.description || null,
     entryFee: Number(tournament.entryFee),
@@ -42,24 +45,44 @@ function buildTournamentSnapshot(tournament, extra = {}) {
   };
 }
 
+async function fetchSeasonMatchCount({ tournamentId, seasonId }) {
+  const response = await axios.get(
+    `${MATCHMAKING_SERVICE_URL}/matchmaking/tournament/${encodeURIComponent(tournamentId)}/matches`,
+    { params: { seasonId } }
+  );
+  const matches = response.data?.data?.matches || [];
+  return Array.isArray(matches) ? matches.length : 0;
+}
+
 exports.createTournament = async (req, res) => {
   try {
-    const { name, description, entryFee, maxPlayers, startTime, matchDuration, seasonDuration, gameType, aiDifficulty } = req.body;
+    const { clubId, name, description, entryFee, maxPlayers, startTime, matchDuration, seasonDuration, gameType } = req.body;
+    if (!clubId) {
+      return res.status(400).json({ success: false, error: 'clubId is required' });
+    }
     const normalizedGameType = normalizeGameType(gameType);
-    const effectiveMaxPlayers = normalizedGameType === 'with_ai' ? 2 : maxPlayers;
-    const rawAiDifficulty = aiDifficulty ? Number(aiDifficulty) : null;
-    const normalizedAiDifficulty = rawAiDifficulty ? Math.max(1, Math.min(100, rawAiDifficulty)) : null;
+    const effectiveMaxPlayers = maxPlayers;
+    const parsedStartTime = startTime ? new Date(startTime) : new Date(Date.now() + 3600000); // Default to 1 hour from now
 
     const tournament = await prisma.tournament.create({
       data: {
+        clubId,
         name,
-        description,
+        description: description || null,
         entryFee,
-        maxPlayers: effectiveMaxPlayers,
-        startTime: startTime ? new Date(startTime) : new Date(Date.now() + 3600000),
+        maxPlayers: effectiveMaxPlayers || undefined,
         matchDuration: matchDuration || seasonDuration || DEFAULT_MATCH_DURATION_SECONDS,
         competitionWalletId: null,
-        metadata: { gameType: normalizedGameType, aiDifficulty: normalizedAiDifficulty }
+        startTime: parsedStartTime,
+        status: 'upcoming',
+        stage: 'registration',
+        metadata: {
+          // Assuming buildTournamentMetadata is defined elsewhere or should be removed
+          // For now, keeping it as per the provided snippet, but it's not in the original file.
+          // If buildTournamentMetadata is not defined, this will cause an error.
+          // ...buildTournamentMetadata(undefined, req.user),
+          gameType: normalizedGameType
+        }
       }
     });
 
@@ -83,10 +106,12 @@ exports.createTournament = async (req, res) => {
 
 exports.getTournaments = async (req, res) => {
   try {
-    const { status, limit = 20, offset = 0 } = req.query;
-    
-    const where = status ? { status } : {};
-    
+    const { status, clubId, limit = 20, offset = 0 } = req.query;
+
+    const where = {};
+    if (status) where.status = status;
+    if (clubId) where.clubId = clubId;
+
     const results = await prisma.tournament.findMany({
       where,
       orderBy: { createdAt: 'desc' },
@@ -108,7 +133,7 @@ exports.getTournament = async (req, res) => {
       include: { tournamentPlayers: true },
     });
     if (!tournament) return res.status(404).json({ success: false, error: 'Tournament not found' });
-    
+
     res.json({ success: true, data: tournament });
   } catch (error) {
     logger.error('Get tournament error:', error);
@@ -317,6 +342,84 @@ exports.cancelTournament = async (req, res) => {
   }
 };
 
+exports.stopTournament = async (req, res) => {
+  try {
+    const { tournamentId } = req.params;
+    const { reason } = req.body;
+
+    const existing = await prisma.tournament.findUnique({ where: { tournamentId } });
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Tournament not found' });
+    }
+
+    if (existing.status === 'stopped') {
+      return res.json({ success: true, data: existing });
+    }
+
+    const updated = await prisma.tournament.update({
+      where: { tournamentId },
+      data: {
+        status: 'stopped',
+        metadata: { ...(existing.metadata || {}), stopReason: reason || null },
+        updatedAt: new Date()
+      }
+    });
+
+    await cancelTournamentSchedule(tournamentId, { cancelSeasons: false });
+
+    await publishEvent(
+      Topics.TOURNAMENT_STOPPED,
+      buildTournamentSnapshot(updated, { reason: reason || null }),
+      tournamentId
+    ).catch((err) => {
+      logger.error({ err }, 'Failed to publish tournament stopped event');
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    logger.error('Stop tournament error:', error);
+    res.status(500).json({ success: false, error: 'Failed to stop tournament' });
+  }
+};
+
+exports.resumeTournament = async (req, res) => {
+  try {
+    const { tournamentId } = req.params;
+
+    const existing = await prisma.tournament.findUnique({ where: { tournamentId } });
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Tournament not found' });
+    }
+
+    if (existing.status === 'active') {
+      return res.json({ success: true, data: existing });
+    }
+
+    const updated = await prisma.tournament.update({
+      where: { tournamentId },
+      data: {
+        status: 'active',
+        startTime: existing.startTime || new Date(),
+        updatedAt: new Date()
+      }
+    });
+
+    await publishEvent(
+      Topics.TOURNAMENT_RESUMED,
+      buildTournamentSnapshot(updated),
+      tournamentId
+    ).catch((err) => {
+      logger.error({ err }, 'Failed to publish tournament resumed event');
+    });
+
+    await ensureTournamentSchedule(tournamentId);
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    logger.error('Resume tournament error:', error);
+    res.status(500).json({ success: false, error: 'Failed to resume tournament' });
+  }
+};
+
 exports.joinSeason = async (req, res) => {
   try {
     const { seasonId } = req.params;
@@ -338,6 +441,11 @@ exports.joinSeason = async (req, res) => {
     if (!tournament || tournament.status !== 'active') {
       return res.status(400).json({ success: false, error: 'Tournament is not active' });
     }
+
+    const normalizedGameType = normalizeGameType(
+      tournament?.metadata?.gameType || tournament?.gameType
+    );
+    const platformFeePercent = normalizedGameType === 'with_ai' ? 0.10 : 0.30;
 
     if (season.status !== 'upcoming') {
       return res.status(400).json({ success: false, error: 'Season is not accepting joins' });
@@ -371,7 +479,8 @@ exports.joinSeason = async (req, res) => {
         amount: tournament.entryFee,
         tournamentId: tournament.tournamentId,
         seasonId: season.seasonId,
-        userId: playerId
+        userId: playerId,
+        platformFeePercent
       }, {
         headers: {
           'Authorization': req.headers.authorization,
@@ -473,6 +582,8 @@ exports.updateTournament = async (req, res) => {
     delete updateData.createdAt;
     delete updateData.tournamentId;
     delete updateData.competitionWalletId;
+    delete updateData.clubId;
+    delete updateData.status; // Prevent direct status updates
 
     const tournament = await prisma.tournament.findUnique({
       where: { tournamentId }
@@ -480,6 +591,77 @@ exports.updateTournament = async (req, res) => {
 
     if (!tournament) {
       return res.status(404).json({ success: false, error: 'Tournament not found' });
+    }
+
+    // CRITICAL: Only allow updates when tournament is stopped or upcoming
+    if (tournament.status === 'active') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Cannot update active tournament. Stop the tournament first, then update, then resume.',
+        requiresStop: true,
+        currentStatus: tournament.status
+      });
+    }
+
+    // Check if tournament has active seasons (additional safety check)
+    if (tournament.status !== 'upcoming') {
+      const activeSeasons = await prisma.season.count({
+        where: { 
+          tournamentId,
+          status: { in: ['active', 'pending'] }
+        }
+      });
+
+      if (activeSeasons > 0) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Cannot update tournament with active seasons. Stop the tournament first.',
+          activeSeasons,
+          requiresStop: true
+        });
+      }
+    }
+
+    // Validate maxPlayers
+    if (updateData.maxPlayers !== undefined) {
+      const parsedMaxPlayers = Number(updateData.maxPlayers);
+      if (!Number.isFinite(parsedMaxPlayers) || parsedMaxPlayers < 2) {
+        return res.status(400).json({ success: false, error: 'maxPlayers must be a number >= 2' });
+      }
+      if (parsedMaxPlayers < tournament.currentPlayers) {
+        return res.status(400).json({ success: false, error: 'maxPlayers cannot be below current players' });
+      }
+      updateData.maxPlayers = Math.floor(parsedMaxPlayers);
+    }
+
+    // Validate entryFee
+    if (updateData.entryFee !== undefined) {
+      const parsedEntryFee = Number(updateData.entryFee);
+      if (!Number.isFinite(parsedEntryFee) || parsedEntryFee < 0) {
+        return res.status(400).json({ success: false, error: 'entryFee must be a number >= 0' });
+      }
+      updateData.entryFee = parsedEntryFee;
+    }
+
+    // Validate matchDuration
+    if (updateData.matchDuration !== undefined) {
+      const parsedDuration = Number(updateData.matchDuration);
+      if (!Number.isFinite(parsedDuration) || parsedDuration < 60) {
+        return res.status(400).json({ success: false, error: 'matchDuration must be at least 60 seconds' });
+      }
+      updateData.matchDuration = parsedDuration;
+    }
+
+    // Parse startTime if provided
+    if (updateData.startTime) {
+      try {
+        updateData.startTime = new Date(updateData.startTime);
+        if (isNaN(updateData.startTime.getTime())) {
+          return res.status(400).json({ success: false, error: 'Invalid startTime format' });
+        }
+      } catch (err) {
+        return res.status(400).json({ success: false, error: 'Invalid startTime format' });
+      }
     }
 
     const updated = await prisma.tournament.update({
@@ -490,6 +672,7 @@ exports.updateTournament = async (req, res) => {
       }
     });
 
+    // Reschedule start if startTime changed and tournament is upcoming
     if (updateData.startTime && updated.status === 'upcoming') {
       await scheduleTournamentStart(updated.tournamentId, updated.startTime);
     }
@@ -502,8 +685,18 @@ exports.updateTournament = async (req, res) => {
       logger.error({ err }, 'Failed to publish tournament updated event');
     });
 
-    logger.info(`Tournament updated: ${tournamentId}`);
-    res.json({ success: true, data: updated });
+    logger.info({ 
+      tournamentId, 
+      updatedFields: Object.keys(updateData),
+      previousStatus: tournament.status,
+      newStatus: updated.status
+    }, 'Tournament updated successfully');
+
+    res.json({ 
+      success: true, 
+      data: updated,
+      message: 'Tournament updated successfully. Use /resume endpoint to resume if needed.'
+    });
   } catch (error) {
     logger.error('Update tournament error:', error);
     res.status(500).json({ success: false, error: 'Failed to update tournament' });
@@ -528,9 +721,9 @@ exports.deleteTournament = async (req, res) => {
 
     // Check if tournament can be deleted
     if (tournament.status === 'active') {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Cannot delete active tournament. Cancel it first.' 
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot delete active tournament. Cancel it first.'
       });
     }
 
@@ -583,5 +776,132 @@ exports.deleteTournament = async (req, res) => {
   } catch (error) {
     logger.error('Delete tournament error:', error);
     res.status(500).json({ success: false, error: 'Failed to delete tournament' });
+  }
+};
+
+exports.repairSeasonFixtures = async (req, res) => {
+  try {
+    const role = String(req.user?.role || '').toLowerCase();
+    if (!['admin', 'manager', 'director', 'super_admin'].includes(role)) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+
+    const { tournamentId, limit = 50, dryRun = false } = req.body || {};
+    const where = { status: 'active' };
+    if (tournamentId) where.tournamentId = tournamentId;
+
+    const seasons = await prisma.season.findMany({
+      where,
+      take: Number(limit),
+      include: {
+        tournament: true,
+        tournamentPlayers: { select: { playerId: true, status: true } }
+      },
+      orderBy: { startTime: 'asc' }
+    });
+
+    const results = [];
+    for (const season of seasons) {
+      const players = season.tournamentPlayers
+        .filter((p) => p.status !== 'eliminated')
+        .map((p) => p.playerId);
+
+      if (players.length < 2) {
+        results.push({
+          seasonId: season.seasonId,
+          tournamentId: season.tournamentId,
+          playerCount: players.length,
+          action: 'skipped_insufficient_players'
+        });
+        continue;
+      }
+
+      const matchCount = await fetchSeasonMatchCount({
+        tournamentId: season.tournamentId,
+        seasonId: season.seasonId
+      });
+
+      if (matchCount > 0) {
+        results.push({
+          seasonId: season.seasonId,
+          tournamentId: season.tournamentId,
+          playerCount: players.length,
+          matchCount,
+          action: 'skipped_has_matches'
+        });
+        continue;
+      }
+
+      if (dryRun) {
+        results.push({
+          seasonId: season.seasonId,
+          tournamentId: season.tournamentId,
+          playerCount: players.length,
+          matchCount,
+          action: 'would_repair'
+        });
+        continue;
+      }
+
+      const tournament = season.tournament;
+      const tournamentStage =
+        tournament?.stage && tournament.stage !== 'registration'
+          ? tournament.stage
+          : 'group';
+      const matchDurationSeconds = Number(tournament?.matchDuration || DEFAULT_MATCH_DURATION_SECONDS);
+      const seasonStartTime = season.startTime ? season.startTime.toISOString() : undefined;
+      const gameType = normalizeGameType(tournament?.metadata?.gameType);
+      const aiSettings = gameType === 'with_ai' ? computeAiSettings(tournament?.entryFee) : null;
+      const aiDifficulty = tournament?.metadata?.aiDifficulty ?? aiSettings?.aiDifficulty ?? null;
+      const level = tournament?.metadata?.level ?? aiSettings?.level ?? null;
+      const aiRating = tournament?.metadata?.aiRating ?? aiSettings?.aiRating ?? null;
+
+      await prisma.season.update({
+        where: { seasonId: season.seasonId },
+        data: { status: 'pending', matchesGenerated: false, errorReason: 'repair_trigger' }
+      });
+
+      await publishEvent(
+        Topics.GENERATE_MATCHES,
+        {
+          tournamentId: season.tournamentId,
+          seasonId: season.seasonId,
+          clubId: season.clubId || tournament?.clubId || null,
+          stage: tournamentStage,
+          players,
+          matchDurationSeconds,
+          entryFee: Number(tournament?.entryFee || 0),
+          startTime: seasonStartTime,
+          gameType,
+          aiDifficulty,
+          aiRating,
+          level
+        },
+        season.seasonId
+      );
+
+      logger.info(
+        {
+          seasonId: season.seasonId,
+          tournamentId: season.tournamentId,
+          playerCount: players.length,
+          matchesCreated: matchCount
+        },
+        '[repairSeasonFixtures] Triggered match generation'
+      );
+
+      results.push({
+        seasonId: season.seasonId,
+        tournamentId: season.tournamentId,
+        playerCount: players.length,
+        matchCount,
+        action: 'repair_triggered'
+      });
+    }
+
+    res.json({ success: true, data: { total: results.length, results } });
+  } catch (error) {
+    logger.error({ err: error }, '[repairSeasonFixtures] Failed to repair seasons');
+    res.status(500).json({ success: false, error: 'Failed to repair seasons' });
   }
 };

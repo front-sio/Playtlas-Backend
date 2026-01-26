@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS deposits (
   phone_number TEXT NOT NULL,
   reference_number TEXT UNIQUE NOT NULL,
   external_reference TEXT,
+  provider_tid TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'expired', 'cancelled')),
   failure_reason TEXT,
   initiated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -192,6 +193,7 @@ CREATE INDEX IF NOT EXISTS idx_payment_methods_phone ON payment_methods(phone_nu
 CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);
 CREATE INDEX IF NOT EXISTS idx_deposits_status ON deposits(status);
 CREATE INDEX IF NOT EXISTS idx_deposits_reference ON deposits(reference_number);
+CREATE INDEX IF NOT EXISTS idx_deposits_provider_tid ON deposits(provider_tid);
 CREATE INDEX IF NOT EXISTS idx_deposits_created ON deposits(initiated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_withdrawals_user ON withdrawals(user_id);
 CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);

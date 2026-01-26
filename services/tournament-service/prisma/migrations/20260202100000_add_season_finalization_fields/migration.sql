@@ -1,0 +1,5 @@
+ALTER TABLE seasons
+  ADD COLUMN IF NOT EXISTS final_match_id UUID,
+  ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS finalized_by_job_id TEXT,
+  ADD COLUMN IF NOT EXISTS error_reason TEXT;

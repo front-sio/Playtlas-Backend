@@ -10,13 +10,18 @@ datasource db {
 model AgentProfile {
   agentId     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId      String   @unique @db.Uuid
+  clubId      String   @db.Uuid
+  deviceLabel String?
   isActive    Boolean  @default(true)
+  status      String   @default("offline")
+  lastSeenAt  DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   players     AgentPlayer[]
   seasonLinks AgentSeasonPlayer[]
   payouts     AgentSeasonPayout[]
+  devices     Device[]
 
   @@map("agent_profiles")
 }
@@ -59,4 +64,170 @@ model AgentSeasonPayout {
 
   @@unique([agentId, seasonId])
   @@map("agent_season_payouts")
+}
+
+model Device {
+  deviceId      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  agentId       String   @db.Uuid
+  clubId        String   @db.Uuid
+  name          String
+  status        String   @default("active")
+  capacitySlots Int      @default(5)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  agent         AgentProfile @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
+
+  @@map("devices")
+}
+
+model AgentShift {
+  shiftId        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("shift_id")
+  clubId         String   @db.Uuid @map("club_id")
+  agentId        String   @db.Uuid @map("agent_id")
+  shiftDate      DateTime @db.Date @map("shift_date")
+  startTime      DateTime? @db.Time @map("start_time")
+  endTime        DateTime? @db.Time @map("end_time")
+  status         String   @default("SCHEDULED")
+  actualStartTime DateTime? @map("actual_start_time")
+  actualEndTime  DateTime? @map("actual_end_time")
+  basePayAmount  Decimal  @db.Decimal(10, 2) @map("base_pay_amount")
+  uptimePercentage Decimal? @db.Decimal(5, 2) @map("uptime_percentage")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([clubId, agentId, shiftDate])
+  @@map("agent_shifts")
+}
+
+model ClubRevenueDaily {
+  revenueId        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("revenue_id")
+  clubId           String   @db.Uuid @map("club_id")
+  revenueDate      DateTime @db.Date @map("revenue_date")
+  totalEntryFees   Decimal  @db.Decimal(12, 2) @map("total_entry_fees")
+  totalPlatformFees Decimal @db.Decimal(12, 2) @map("total_platform_fees")
+  totalSeasons     Int      @default(0) @map("total_seasons")
+  totalMatches     Int      @default(0) @map("total_matches")
+  completedMatches Int      @default(0) @map("completed_matches")
+  agentSharePercent Decimal @db.Decimal(5, 4) @map("agent_share_percent")
+  agentPoolAmount  Decimal  @db.Decimal(12, 2) @map("agent_pool_amount")
+  status           String   @default("DRAFT")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  finalizedAt      DateTime? @map("finalized_at")
+  finalizedBy      String?  @db.Uuid @map("finalized_by")
+
+  @@unique([clubId, revenueDate])
+  @@map("club_revenue_daily")
+}
+
+model AgentEarningsDaily {
+  earningsId        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("earnings_id")
+  clubId            String   @db.Uuid @map("club_id")
+  agentId           String   @db.Uuid @map("agent_id")
+  earningsDate      DateTime @db.Date @map("earnings_date")
+  basePayAmount     Decimal  @db.Decimal(10, 2) @map("base_pay_amount")
+  revenueShareAmount Decimal @db.Decimal(10, 2) @map("revenue_share_amount")
+  bonusAmount       Decimal  @db.Decimal(10, 2) @map("bonus_amount")
+  totalAmount       Decimal  @db.Decimal(10, 2) @map("total_amount")
+  matchesCompleted  Int      @default(0) @map("matches_completed")
+  uptimeMinutes     Int      @default(0) @map("uptime_minutes")
+  uptimePercentage  Decimal  @db.Decimal(5, 2) @map("uptime_percentage")
+  matchWeight       Decimal  @db.Decimal(8, 4) @map("match_weight")
+  uptimeWeight      Decimal  @db.Decimal(8, 4) @map("uptime_weight")
+  totalWeight       Decimal  @db.Decimal(8, 4) @map("total_weight")
+  weightPercentage  Decimal  @db.Decimal(5, 4) @map("weight_percentage")
+  computedFrom      Json?    @map("computed_from")
+  status            String   @default("DRAFT")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  finalizedAt       DateTime? @map("finalized_at")
+  finalizedBy       String?  @db.Uuid @map("finalized_by")
+  paidAt            DateTime? @map("paid_at")
+  paidBy            String?  @db.Uuid @map("paid_by")
+
+  @@unique([clubId, agentId, earningsDate])
+  @@map("agent_earnings_daily")
+}
+
+model PayoutTransaction {
+  transactionId   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("transaction_id")
+  clubId          String   @db.Uuid @map("club_id")
+  agentId         String   @db.Uuid @map("agent_id")
+  periodStart     DateTime @db.Date @map("period_start")
+  periodEnd       DateTime @db.Date @map("period_end")
+  amount          Decimal  @db.Decimal(12, 2)
+  method          String   @default("WALLET")
+  referenceId     String?  @map("reference_id")
+  recipientDetails Json?   @map("recipient_details")
+  status          String   @default("INITIATED")
+  initiatedBy     String?  @db.Uuid @map("initiated_by")
+  processedBy     String?  @db.Uuid @map("processed_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+  processedAt     DateTime? @map("processed_at")
+  failureReason   String?  @map("failure_reason")
+  retryCount      Int      @default(0) @map("retry_count")
+
+  @@map("payout_transactions")
+}
+
+model AgentContributionLog {
+  logId                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("log_id")
+  clubId               String   @db.Uuid @map("club_id")
+  agentId              String   @db.Uuid @map("agent_id")
+  contributionDate     DateTime @db.Date @map("contribution_date")
+  matchId              String?  @db.Uuid @map("match_id")
+  deviceId             String?  @db.Uuid @map("device_id")
+  matchStartedAt       DateTime? @map("match_started_at")
+  matchCompletedAt     DateTime? @map("match_completed_at")
+  matchDurationSeconds Int?     @map("match_duration_seconds")
+  matchEntryFee        Decimal  @db.Decimal(10, 2) @map("match_entry_fee")
+  matchPlatformFee     Decimal  @db.Decimal(10, 2) @map("match_platform_fee")
+  contributionWeight   Decimal  @db.Decimal(8, 4) @map("contribution_weight")
+  contributionType     String   @default("MATCH") @map("contribution_type")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@map("agent_contribution_logs")
+}
+
+model ClubPayoutConfig {
+  configId                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("config_id")
+  clubId                   String   @unique @db.Uuid @map("club_id")
+  basePayAmount            Decimal  @db.Decimal(10, 2) @map("base_pay_amount")
+  basePayCurrency          String   @default("TSH") @map("base_pay_currency")
+  basePayUptimeThreshold   Decimal  @db.Decimal(5, 4) @map("base_pay_uptime_threshold")
+  agentSharePercent        Decimal  @db.Decimal(5, 4) @map("agent_share_percent")
+  weightByMatches          Boolean  @default(true) @map("weight_by_matches")
+  weightByUptime           Boolean  @default(false) @map("weight_by_uptime")
+  matchWeightPercent       Decimal  @db.Decimal(3, 2) @map("match_weight_percent")
+  uptimeWeightPercent      Decimal  @db.Decimal(3, 2) @map("uptime_weight_percent")
+  uptimeBonusEnabled       Boolean  @default(true) @map("uptime_bonus_enabled")
+  uptimeBonusThreshold     Decimal  @db.Decimal(3, 2) @map("uptime_bonus_threshold")
+  uptimeBonusAmount        Decimal  @db.Decimal(10, 2) @map("uptime_bonus_amount")
+  attendanceBonusEnabled   Boolean  @default(true) @map("attendance_bonus_enabled")
+  attendanceBonusAmount    Decimal  @db.Decimal(10, 2) @map("attendance_bonus_amount")
+  qualityBonusEnabled      Boolean  @default(false) @map("quality_bonus_enabled")
+  qualityBonusAmount       Decimal  @db.Decimal(10, 2) @map("quality_bonus_amount")
+  registrationBonusEnabled Boolean  @default(true) @map("registration_bonus_enabled")
+  registrationBonusThreshold Decimal @db.Decimal(5, 4) @map("registration_bonus_threshold")
+  registrationBonusPercent Decimal  @db.Decimal(6, 4) @map("registration_bonus_percent")
+  payoutFrequency          String   @default("DAILY") @map("payout_frequency")
+  autoPayoutEnabled        Boolean  @default(false) @map("auto_payout_enabled")
+  minPayoutAmount          Decimal  @db.Decimal(10, 2) @map("min_payout_amount")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+  updatedBy                String?  @db.Uuid @map("updated_by")
+
+  @@map("club_payout_configs")
+}
+
+model EarningsAuditLog {
+  auditId     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("audit_id")
+  clubId      String   @db.Uuid @map("club_id")
+  auditDate   DateTime @db.Date @map("audit_date")
+  eventType   String   @map("event_type")
+  details     Json?    @map("details")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("earnings_audit_log")
 }

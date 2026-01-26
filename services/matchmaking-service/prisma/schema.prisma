@@ -1,3 +1,4 @@
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,53 +9,112 @@ datasource db {
 }
 
 model Match {
-  matchId             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tournamentId        String    @db.Uuid
-  seasonId            String?   @db.Uuid
-  stage               String
-  roundNumber         Int
-  player1Id           String    @db.Uuid
-  player2Id           String    @db.Uuid
-  player1Score        Int       @default(0)
-  player2Score        Int       @default(0)
-  winnerId            String?   @db.Uuid
-  status              String    @default("scheduled")
-  scheduledTime       DateTime?
-  startedAt           DateTime?
-  completedAt         DateTime?
-  gameSessionId       String?
-  gameServerUrl       String?
-  player1Ready        Boolean   @default(false)
-  player2Ready        Boolean   @default(false)
-  player1ConnectionTime DateTime?
-  player2ConnectionTime DateTime?
-  suspiciousActivity  Boolean   @default(false)
-  metadata            Json?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  matchId                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tournamentId            String    @db.Uuid
+  seasonId                String?   @db.Uuid
+  clubId                  String?   @db.Uuid
+  stage                   String
+  roundNumber             Int
+  round                   String?
+  bracketGroup            String?
+  winnerAdvancesToMatchId String?   @db.Uuid
+  winnerAdvancesToSlot    String?
+  player1Id               String    @db.Uuid
+  player2Id               String    @db.Uuid
+  player1Score            Int       @default(0)
+  player2Score            Int       @default(0)
+  winnerId                String?   @db.Uuid
+  status                  String    @default("scheduled")
+  scheduledTime           DateTime?
+  scheduledStartAt        DateTime?
+  startedAt               DateTime?
+  completedAt             DateTime?
+  gameSessionId           String?
+  gameServerUrl           String?
+  assignedAgentId         String?   @db.Uuid
+  assignedAgentUserId     String?   @db.Uuid
+  assignedDeviceId        String?   @db.Uuid
+  assignedHostPlayerUserId String?  @db.Uuid
+  hostAssignedAt          DateTime?
+  verificationStatus      String?   // pending, qr_issued, verified, expired
+  verificationMethod      String?   // qr_ble, qr_gps, qr_only
+  verifiedAt              DateTime?
+  completedByAgentId      String?   @db.Uuid
+  completedByDeviceId     String?   @db.Uuid
+  player1Ready            Boolean   @default(false)
+  player2Ready            Boolean   @default(false)
+  player1ConnectionTime   DateTime?
+  player2ConnectionTime   DateTime?
+  suspiciousActivity      Boolean   @default(false)
+  
+  // Club-based game data
+  gameData                Json?     // Store game result, duration, shots, etc.
+  matchDuration           Int?      // Duration in seconds
+  endReason               String?   // "8ball_potted", "timeout", "forfeit"
+  
+  metadata                Json?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   @@map("matches")
 }
 
+model MatchVerification {
+  verificationId   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  matchId          String   @db.Uuid
+  hostUserId       String   @db.Uuid
+  opponentUserId   String   @db.Uuid
+  opponentSessionId String?
+  bleNonce         String?
+  tokenHash        String
+  status           String   @default("issued") // issued, consumed, expired, revoked
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  createdAt        DateTime @default(now())
+
+  @@index([matchId])
+  @@index([hostUserId, opponentUserId])
+  @@map("match_verifications")
+}
+
 model Player {
-  playerId String @id @db.Uuid
+  playerId  String   @id @db.Uuid
   createdAt DateTime @default(now())
 
   @@map("players")
 }
 
 model MatchQueue {
-  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  playerId      String   @unique @db.Uuid
-  tournamentId  String?  @db.Uuid
-  seasonId      String?  @db.Uuid
-  round         Int?
-  playerRating  Int      @default(1000)
-  status        String   @default("waiting")
-  matchedAt     DateTime?
-  joinedAt      DateTime @default(now())
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  playerId     String    @unique @db.Uuid
+  tournamentId String?   @db.Uuid
+  seasonId     String?   @db.Uuid
+  round        Int?
+  playerRating Int       @default(1000)
+  status       String    @default("waiting")
+  matchId      String?   @db.Uuid // Link to created match
+  matchedAt    DateTime?
+  joinedAt     DateTime  @default(now())
+  metadata     Json?     // Additional data like queue type, priority etc
 
   @@index([status])
   @@index([tournamentId, seasonId, round])
+  @@index([playerId, status])
   @@map("match_queue")
+}
+
+// Club device assignments for matches
+model ClubDevice {
+  deviceId    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clubId      String    @db.Uuid
+  deviceName  String
+  location    String?   // Table location within club
+  isActive    Boolean   @default(true)
+  currentMatchId String? @db.Uuid // Currently assigned match
+  lastUsed    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([clubId, isActive])
+  @@map("club_devices")
 }

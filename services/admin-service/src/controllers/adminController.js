@@ -22,10 +22,43 @@ const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost
 const AGENT_SERVICE_URL = process.env.AGENT_SERVICE_URL || 'http://localhost:3010';
 const TOURNAMENT_SERVICE_URL = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3000';
 const MATCHMAKING_SERVICE_URL = process.env.MATCHMAKING_SERVICE_URL || 'http://localhost:3009';
+const AI_PLAYER_ID = process.env.AI_PLAYER_ID || null;
+const AI_WALLET_OWNER_ID = process.env.AI_WALLET_OWNER_ID || AI_PLAYER_ID;
+const AI_WALLET_TYPE = process.env.AI_WALLET_TYPE || 'ai';
 
 const getAuthHeaders = (req) => {
   const authHeader = req.headers.authorization;
   return authHeader ? { Authorization: authHeader } : {};
+};
+
+const fetchAiWallet = async (headers) => {
+  if (!AI_WALLET_OWNER_ID) return null;
+
+  try {
+    const response = await axios.get(
+      `${WALLET_SERVICE_URL}/owner/${encodeURIComponent(AI_WALLET_OWNER_ID)}?type=${encodeURIComponent(AI_WALLET_TYPE)}`,
+      { headers }
+    );
+    return response.data?.data || response.data;
+  } catch (error) {
+    if (error.response?.status !== 404) {
+      throw error;
+    }
+  }
+
+  try {
+    const response = await axios.get(
+      `${WALLET_SERVICE_URL}/owner/${encodeURIComponent(AI_WALLET_OWNER_ID)}?type=player`,
+      { headers }
+    );
+    return response.data?.data || response.data;
+  } catch (error) {
+    if (error.response?.status !== 404) {
+      throw error;
+    }
+  }
+
+  return null;
 };
 
 const toDate = (value) => {
@@ -410,20 +443,23 @@ exports.cancelTournament = asyncHandler(async (req, res) => {
 // Dashboard Statistics
 exports.getDashboardStats = asyncHandler(async (req, res) => {
   try {
-    const [authStats, walletStats, tournamentStats, paymentStats, systemWallet, activeSessions, agentUsers] = await Promise.all([
-      axios.get(`${AUTH_SERVICE_URL}/stats`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
-      axios.get(`${WALLET_SERVICE_URL}/stats`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
-      axios.get(`${TOURNAMENT_SERVICE_URL}/tournament/stats`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
-      axios.get(`${PAYMENT_SERVICE_URL}/admin/stats`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
-      axios.get(`${WALLET_SERVICE_URL}/system/wallet`, { headers: getAuthHeaders(req) }).catch(() => ({ data: {} })),
+    const authHeaders = getAuthHeaders(req);
+    const [authStats, walletStats, tournamentStats, paymentStats, systemWallet, platformWallet, activeSessions, agentUsers, aiWallet] = await Promise.all([
+      axios.get(`${AUTH_SERVICE_URL}/stats`, { headers: authHeaders }).catch(() => ({ data: {} })),
+      axios.get(`${WALLET_SERVICE_URL}/stats`, { headers: authHeaders }).catch(() => ({ data: {} })),
+      axios.get(`${TOURNAMENT_SERVICE_URL}/tournament/stats`, { headers: authHeaders }).catch(() => ({ data: {} })),
+      axios.get(`${PAYMENT_SERVICE_URL}/admin/stats`, { headers: authHeaders }).catch(() => ({ data: {} })),
+      axios.get(`${WALLET_SERVICE_URL}/system/wallet`, { headers: authHeaders }).catch(() => ({ data: {} })),
+      axios.get(`${WALLET_SERVICE_URL}/platform/wallet`, { headers: authHeaders }).catch(() => ({ data: {} })),
       axios.get(`${GAME_SERVICE_URL}/sessions`, {
-        headers: getAuthHeaders(req),
+        headers: authHeaders,
         params: { status: 'active', limit: 200 }
       }).catch(() => ({ data: {} })),
       axios.get(`${AUTH_SERVICE_URL}/users`, {
-        headers: getAuthHeaders(req),
+        headers: authHeaders,
         params: { role: 'agent', limit: 1, offset: 0 }
-      }).catch(() => ({ data: {} }))
+      }).catch(() => ({ data: {} })),
+      fetchAiWallet(authHeaders).catch(() => null)
     ]);
 
     const usersData = authStats.data?.data || authStats.data || {};
@@ -431,12 +467,17 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
     const tournamentData = tournamentStats.data?.data || tournamentStats.data || {};
     const paymentData = paymentStats.data?.data || paymentStats.data || {};
     const systemWalletData = systemWallet.data?.data || systemWallet.data || {};
+    const platformWalletData = platformWallet.data?.data || platformWallet.data || {};
+    const aiWalletData = aiWallet || {};
     const sessionsData = activeSessions.data?.data || activeSessions.data || [];
     const agentTotal = agentUsers.data?.pagination?.total || 0;
 
-    const platformFees = Number(systemWalletData.balance || 0);
+    const systemWalletBalance = Number(systemWalletData.balance || 0);
+    const platformWalletBalance = Number(platformWalletData.balance || 0);
+    const aiWalletBalance = Number(aiWalletData.balance || 0);
     const transactionFees = Number(paymentData.transactionFees || 0);
-    const platformRevenue = platformFees + transactionFees;
+    const platformRevenue = platformWalletBalance;
+    const generalRevenue = platformWalletBalance + systemWalletBalance + aiWalletBalance;
     const pendingDeposits = Number(paymentData.pendingDeposits || 0);
     const pendingCashouts = Number(paymentData.pendingCashouts || 0);
     const activeSessionCount = Array.isArray(sessionsData) ? sessionsData.length : 0;
@@ -451,8 +492,12 @@ exports.getDashboardStats = asyncHandler(async (req, res) => {
       financial: {
         ...(financialData || {}),
         transactionFees,
-        platformFees,
-        platformRevenue
+        platformFees: platformWalletBalance,
+        platformRevenue,
+        platformWalletBalance,
+        systemWalletBalance,
+        aiWalletBalance,
+        generalRevenue
       },
       payments: {
         ...paymentData,
@@ -505,8 +550,8 @@ exports.getAgents = asyncHandler(async (req, res) => {
 });
 
 exports.createAgent = asyncHandler(async (req, res) => {
-  const { username, email, password, phoneNumber, firstName, lastName, gender } = req.body;
-  if (!username || !email || !password || !phoneNumber || !firstName || !lastName || !gender) {
+  const { username, email, password, phoneNumber, firstName, lastName, gender, clubId } = req.body;
+  if (!username || !email || !password || !phoneNumber || !firstName || !lastName || !gender || !clubId) {
     return res.status(400).json({ success: false, error: 'Missing required fields' });
   }
 
@@ -519,7 +564,8 @@ exports.createAgent = asyncHandler(async (req, res) => {
       firstName,
       lastName,
       gender,
-      role: 'agent'
+      role: 'agent',
+      clubId
     }, { headers: getAuthHeaders(req) });
 
     const createdUser = createResponse.data?.data?.user;
@@ -529,7 +575,8 @@ exports.createAgent = asyncHandler(async (req, res) => {
 
     try {
       await axios.post(`${AGENT_SERVICE_URL}/admin/agents`, {
-        userId: createdUser.userId
+        userId: createdUser.userId,
+        clubId
       }, { headers: getAuthHeaders(req) });
     } catch (err) {
       logger.error({ err }, 'Failed to initialize agent profile');
@@ -807,6 +854,116 @@ exports.debitWallet = asyncHandler(async (req, res) => {
 });
 
 // Tournament Management
+exports.createClub = asyncHandler(async (req, res) => {
+  try {
+    const response = await axios.post(
+      `${TOURNAMENT_SERVICE_URL}/tournament/clubs`,
+      req.body,
+      { headers: getAuthHeaders(req) }
+    );
+
+    await ActivityLogger.log(
+      req.adminId,
+      'create_club',
+      'clubs',
+      { resourceId: response.data?.data?.clubId, name: req.body?.name }
+    );
+
+    res.status(201).json(response.data);
+  } catch (error) {
+    logger.error('Failed to create club:', error.message);
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || 'Failed to create club'
+    });
+  }
+});
+
+exports.getClubs = asyncHandler(async (req, res) => {
+  try {
+    const response = await axios.get(`${TOURNAMENT_SERVICE_URL}/tournament/clubs`, {
+      headers: getAuthHeaders(req),
+      params: req.query
+    });
+
+    await ActivityLogger.log(req.adminId, 'view_clubs', 'clubs');
+    res.json(response.data);
+  } catch (error) {
+    logger.error('Failed to get clubs:', error.message);
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || 'Failed to get clubs'
+    });
+  }
+});
+
+exports.getClub = asyncHandler(async (req, res) => {
+  const { clubId } = req.params;
+  try {
+    const response = await axios.get(`${TOURNAMENT_SERVICE_URL}/tournament/clubs/${clubId}`, {
+      headers: getAuthHeaders(req)
+    });
+    res.json(response.data);
+  } catch (error) {
+    logger.error('Failed to get club:', error.message);
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || 'Failed to get club'
+    });
+  }
+});
+
+exports.updateClub = asyncHandler(async (req, res) => {
+  const { clubId } = req.params;
+  try {
+    const response = await axios.put(
+      `${TOURNAMENT_SERVICE_URL}/tournament/clubs/${clubId}`,
+      req.body,
+      { headers: getAuthHeaders(req) }
+    );
+
+    await ActivityLogger.log(
+      req.adminId,
+      'update_club',
+      'clubs',
+      { resourceId: clubId }
+    );
+
+    res.json(response.data);
+  } catch (error) {
+    logger.error('Failed to update club:', error.message);
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || 'Failed to update club'
+    });
+  }
+});
+
+exports.deleteClub = asyncHandler(async (req, res) => {
+  const { clubId } = req.params;
+  try {
+    const response = await axios.delete(
+      `${TOURNAMENT_SERVICE_URL}/tournament/clubs/${clubId}`,
+      { headers: getAuthHeaders(req) }
+    );
+
+    await ActivityLogger.log(
+      req.adminId,
+      'delete_club',
+      'clubs',
+      { resourceId: clubId }
+    );
+
+    res.json(response.data);
+  } catch (error) {
+    logger.error('Failed to delete club:', error.message);
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || 'Failed to delete club'
+    });
+  }
+});
+
 exports.createTournament = asyncHandler(async (req, res) => {
   const tournamentData = req.body;
   tournamentData.createdBy = req.adminId;
@@ -902,8 +1059,8 @@ exports.getTournamentOverview = asyncHandler(async (req, res) => {
       return acc;
     }, {});
 
-    const activeStatuses = new Set(['active', 'in_progress', 'in-progress', 'ready', 'matched', 'scheduled']);
-    const inProgressStatuses = new Set(['active', 'in_progress', 'in-progress', 'ready', 'matched']);
+    const activeStatuses = new Set(['active', 'in_progress', 'ready', 'matched', 'scheduled']);
+    const inProgressStatuses = new Set(['active', 'in_progress', 'ready', 'matched']);
     const totalMatches = matches.length;
     const activeMatches = Object.entries(matchStatusCounts)
       .filter(([status]) => activeStatuses.has(status))
@@ -949,10 +1106,17 @@ exports.updateTournament = asyncHandler(async (req, res) => {
   const updateData = req.body;
 
   try {
+    const headers = getAuthHeaders(req);
+    console.log('Admin service calling tournament service with headers:', { 
+      hasAuth: !!headers.Authorization,
+      adminId: req.adminId,
+      url: `${TOURNAMENT_SERVICE_URL}/tournament/${tournamentId}`
+    });
+
     const response = await axios.put(
       `${TOURNAMENT_SERVICE_URL}/tournament/${tournamentId}`,
       { ...updateData, updatedBy: req.adminId },
-      { headers: getAuthHeaders(req) }
+      { headers, timeout: 10000 }
     );
     const result = response.data?.data;
 
@@ -974,9 +1138,19 @@ exports.updateTournament = asyncHandler(async (req, res) => {
     logger.info(`Tournament updated: ${tournamentId}`);
     res.json({ success: true, data: result });
   } catch (error) {
+    console.error('Tournament service error details:', {
+      status: error.response?.status,
+      data: error.response?.data,
+      message: error.message
+    });
+    
     res.status(502).json({ 
       success: false, 
-      error: error.message || 'Failed to update tournament' 
+      error: error.response?.data?.error || error.message || 'Failed to update tournament',
+      details: {
+        status: error.response?.status,
+        tournamentServiceResponse: error.response?.data
+      }
     });
   }
 });
@@ -1044,6 +1218,205 @@ exports.startTournament = asyncHandler(async (req, res) => {
     res.status(502).json({ 
       success: false, 
       error: error.message || 'Failed to start tournament' 
+    });
+  }
+});
+
+exports.stopTournament = asyncHandler(async (req, res) => {
+  const { tournamentId } = req.params;
+
+  try {
+    const response = await axios.post(
+      `${TOURNAMENT_SERVICE_URL}/tournament/${tournamentId}/stop`,
+      { stoppedBy: req.adminId },
+      { headers: getAuthHeaders(req) }
+    );
+    const result = response.data?.data?.tournament || response.data?.data;
+
+    if (result) {
+      try {
+        await syncTournamentReadModel(result);
+      } catch (err) {
+        logger.error({ err }, 'Failed to sync tournament read model after stop');
+      }
+    }
+
+    await ActivityLogger.log(
+      req.adminId,
+      'stop_tournament',
+      'tournaments',
+      { resourceId: tournamentId }
+    );
+
+    logger.info(`Tournament stopped: ${tournamentId}`);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(502).json({
+      success: false,
+      error: error.message || 'Failed to stop tournament'
+    });
+  }
+});
+
+exports.resumeTournament = asyncHandler(async (req, res) => {
+  const { tournamentId } = req.params;
+
+  try {
+    const response = await axios.post(
+      `${TOURNAMENT_SERVICE_URL}/tournament/${tournamentId}/resume`,
+      { resumedBy: req.adminId },
+      { headers: getAuthHeaders(req) }
+    );
+    const result = response.data?.data?.tournament || response.data?.data;
+
+    if (result) {
+      try {
+        await syncTournamentReadModel(result);
+      } catch (err) {
+        logger.error({ err }, 'Failed to sync tournament read model after resume');
+      }
+    }
+
+    await ActivityLogger.log(
+      req.adminId,
+      'resume_tournament',
+      'tournaments',
+      { resourceId: tournamentId }
+    );
+
+    logger.info(`Tournament resumed: ${tournamentId}`);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(502).json({
+      success: false,
+      error: error.message || 'Failed to resume tournament'
+    });
+  }
+});
+
+exports.repairSeasonFixtures = asyncHandler(async (req, res) => {
+  const { tournamentId, limit, dryRun } = req.body || {};
+  try {
+    const response = await axios.post(
+      `${TOURNAMENT_SERVICE_URL}/tournament/admin/seasons/repair`,
+      { tournamentId, limit, dryRun },
+      { headers: getAuthHeaders(req) }
+    );
+
+    await ActivityLogger.log(
+      req.adminId,
+      'repair_season_fixtures',
+      'tournaments',
+      { tournamentId: tournamentId || null, dryRun: Boolean(dryRun) }
+    );
+
+    res.json({ success: true, data: response.data?.data || response.data });
+  } catch (error) {
+    logger.error({ err: error }, 'Failed to repair season fixtures');
+    res.status(502).json({
+      success: false,
+      error: error.message || 'Failed to repair season fixtures'
+    });
+  }
+});
+
+exports.getClubRevenue = asyncHandler(async (req, res) => {
+  const { clubId } = req.params;
+  const { startDate, endDate } = req.query;
+  try {
+    const response = await axios.get(
+      `${AGENT_SERVICE_URL}/admin/payments/clubs/${encodeURIComponent(clubId)}/revenue`,
+      {
+        headers: getAuthHeaders(req),
+        params: { startDate, endDate }
+      }
+    );
+    res.json(response.data);
+  } catch (error) {
+    logger.error({ err: error, clubId }, 'Failed to fetch club revenue');
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || error.message || 'Failed to fetch club revenue'
+    });
+  }
+});
+
+exports.getClubEarnings = asyncHandler(async (req, res) => {
+  const { clubId } = req.params;
+  const { startDate, endDate, status } = req.query;
+  try {
+    const response = await axios.get(
+      `${AGENT_SERVICE_URL}/admin/payments/clubs/${encodeURIComponent(clubId)}/earnings`,
+      {
+        headers: getAuthHeaders(req),
+        params: { startDate, endDate, status }
+      }
+    );
+    res.json(response.data);
+  } catch (error) {
+    logger.error({ err: error, clubId }, 'Failed to fetch club earnings');
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || error.message || 'Failed to fetch club earnings'
+    });
+  }
+});
+
+exports.computeClubEarnings = asyncHandler(async (req, res) => {
+  const { clubId } = req.params;
+  const { date } = req.body || {};
+  try {
+    const response = await axios.post(
+      `${AGENT_SERVICE_URL}/admin/payments/clubs/${encodeURIComponent(clubId)}/earnings/compute`,
+      { date },
+      { headers: getAuthHeaders(req) }
+    );
+    res.json(response.data);
+  } catch (error) {
+    logger.error({ err: error, clubId }, 'Failed to compute club earnings');
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || error.message || 'Failed to compute club earnings'
+    });
+  }
+});
+
+exports.finalizeClubEarnings = asyncHandler(async (req, res) => {
+  const { clubId } = req.params;
+  const { date } = req.body || {};
+  try {
+    const response = await axios.post(
+      `${AGENT_SERVICE_URL}/admin/payments/clubs/${encodeURIComponent(clubId)}/earnings/finalize`,
+      { date },
+      { headers: getAuthHeaders(req) }
+    );
+    res.json(response.data);
+  } catch (error) {
+    logger.error({ err: error, clubId }, 'Failed to finalize club earnings');
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || error.message || 'Failed to finalize club earnings'
+    });
+  }
+});
+
+exports.getClubPayouts = asyncHandler(async (req, res) => {
+  const { clubId } = req.params;
+  const { startDate, endDate, status, agentId } = req.query;
+  try {
+    const response = await axios.get(
+      `${AGENT_SERVICE_URL}/admin/payments/clubs/${encodeURIComponent(clubId)}/payouts`,
+      {
+        headers: getAuthHeaders(req),
+        params: { startDate, endDate, status, agentId }
+      }
+    );
+    res.json(response.data);
+  } catch (error) {
+    logger.error({ err: error, clubId }, 'Failed to fetch club payouts');
+    res.status(error.response?.status || 502).json({
+      success: false,
+      error: error.response?.data?.error || error.message || 'Failed to fetch club payouts'
     });
   }
 });

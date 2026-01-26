@@ -19,6 +19,8 @@ model User {
   lastName            String?
   gender              String? @db.VarChar(10)
   phoneNumber         String    @unique
+  clubId              String?   @db.Uuid
+  registeredByAgentId String?   @db.Uuid @map("registered_by_agent_id")
   payoutPhoneNumber   String? // Kept for backward compatibility or other uses, PayoutMethod is for detailed payouts
   role                String    @default("player")
   isActive            Boolean   @default(true)
@@ -29,6 +31,7 @@ model User {
   matchesPlayed       Int       @default(0)
   matchesWon          Int       @default(0)
   matchesLost         Int       @default(0)
+  avatarUrl           String?   @map("avatar_url")
   lastLogin           DateTime?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt

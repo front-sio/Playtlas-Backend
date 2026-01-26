@@ -21,7 +21,20 @@ const prisma = new PrismaClient(); // For matchmaking service
 
 // Verify database connections
 prisma.$connect()
-  .then(() => console.log('✓ Matchmaking service database connected via Prisma'))
+  .then(async () => {
+    console.log('✓ Matchmaking service database connected via Prisma');
+    try {
+      const result = await prisma.match.updateMany({
+        where: { status: 'in-progress' },
+        data: { status: 'in_progress' }
+      });
+      if (result.count) {
+        console.log(`✓ Normalized ${result.count} matches to status in_progress`);
+      }
+    } catch (error) {
+      console.error('✗ Failed to normalize match statuses', error);
+    }
+  })
   .catch((err) => console.error('✗ Matchmaking service database connection failed', err));
 
 // Tournament DB direct access removed: match generation is now triggered by Kafka event payloads.
@@ -51,9 +64,17 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Debug route to test routing
+app.get('/test', (req, res) => {
+  res.json({ success: true, message: 'Matchmaking service routing works!' });
+});
+
 // Routes
-app.use('/matchmaking', matchmakingRoutes);
+app.use('/', matchmakingRoutes);  // Mount at root for API gateway
+app.use('/matchmaking', matchmakingRoutes);  // Keep legacy path
+app.use('/matchmaking', require('./routes/seasonMatchmaking'));
 app.use('/api/matchmaking', require('./routes/seasonMatchmaking'));
+app.use('/api', matchmakingRoutes); // Main routes
 
 // Socket.IO setup
 setupSocketHandlers(io);

@@ -11,6 +11,12 @@ function getSocket() {
   const API_GATEWAY_URL = process.env.API_GATEWAY_URL || 'http://localhost:8080';
   const API_GATEWAY_SOCKET_PATH = process.env.API_GATEWAY_SOCKET_PATH || '/socket.io';
   const socketToken = process.env.API_GATEWAY_SOCKET_TOKEN || process.env.SERVICE_SOCKET_TOKEN;
+  const socketEnabled = String(process.env.API_GATEWAY_SOCKET_ENABLED || 'true').toLowerCase() !== 'false';
+
+  if (!socketEnabled) {
+    logger.info('[tournament] Socket.IO disabled by API_GATEWAY_SOCKET_ENABLED');
+    return null;
+  }
 
   if (!socketToken) {
     logger.warn('[tournament] Socket token missing; set API_GATEWAY_SOCKET_TOKEN to emit realtime updates');
@@ -36,7 +42,7 @@ function getSocket() {
   });
 
   socket.on('connect_error', (error) => {
-    logger.error('[tournament] Socket.IO connection error:', error.message);
+    logger.error('[tournament] Socket.IO connection error:', error?.message || error);
   });
 
   socket.on('error', (error) => {

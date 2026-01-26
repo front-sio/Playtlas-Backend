@@ -7,6 +7,10 @@ const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3
 const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003';
 const AGENT_SERVICE_URL = process.env.AGENT_SERVICE_URL || 'http://localhost:3010';
 const TOURNAMENT_SERVICE_URL = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3004';
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
+const SERVICE_JWT_TOKEN = process.env.SERVICE_JWT_TOKEN || null;
+
+const getServiceHeaders = () => (SERVICE_JWT_TOKEN ? { Authorization: `Bearer ${SERVICE_JWT_TOKEN}` } : {});
 
 class RevenueAggregationService {
   
@@ -151,7 +155,7 @@ class RevenueAggregationService {
           create: {
             agentId: agent.agentId || agent.userId,
             userId: agent.userId,
-            agentName: agent.username || agent.name,
+            agentName: agent.agentName || agent.username || agent.name,
             date: startDate,
             period: 'daily',
             ...agentMetrics
@@ -436,7 +440,9 @@ class RevenueAggregationService {
 
   async fetchWalletServiceStats() {
     try {
-      const response = await axios.get(`${WALLET_SERVICE_URL}/system/wallet`);
+      const response = await axios.get(`${WALLET_SERVICE_URL}/system/wallet`, {
+        headers: getServiceHeaders()
+      });
       return response.data?.data || {};
     } catch (error) {
       logger.warn('Failed to fetch wallet service stats:', error.message);
@@ -502,8 +508,9 @@ class RevenueAggregationService {
 
   async fetchAllAgents() {
     try {
-      const response = await axios.get(`${AGENT_SERVICE_URL}/agents`, {
-        params: { limit: 1000 }
+      const response = await axios.get(`${AGENT_SERVICE_URL}/admin/agents`, {
+        params: { limit: 1000, offset: 0 },
+        headers: getServiceHeaders()
       });
       return response.data?.data || [];
     } catch (error) {
@@ -514,8 +521,11 @@ class RevenueAggregationService {
 
   async fetchAgentPlayers(agentId) {
     try {
-      const response = await axios.get(`${AGENT_SERVICE_URL}/players`);
-      return response.data?.data?.filter(p => p.agentId === agentId) || [];
+      const response = await axios.get(`${AGENT_SERVICE_URL}/admin/agents/${encodeURIComponent(agentId)}/players`, {
+        params: { limit: 1000, offset: 0 },
+        headers: getServiceHeaders()
+      });
+      return response.data?.data || [];
     } catch (error) {
       logger.warn('Failed to fetch agent players:', error.message);
       return [];
@@ -532,11 +542,12 @@ class RevenueAggregationService {
       // Fetch player transactions (simplified)
       try {
         const response = await axios.get(`${WALLET_SERVICE_URL}/owner/${player.playerId}`, {
-          params: { type: 'player' }
+          params: { type: 'player' },
+          headers: getServiceHeaders()
         });
         const wallet = response.data?.data;
         if (wallet) {
-          playerRevenue += parseFloat(wallet.balance) || 0;
+          playerRevenue += parseFloat(wallet.revenueBalance || 0);
         }
       } catch (error) {
         // Ignore individual player errors
@@ -559,7 +570,8 @@ class RevenueAggregationService {
   async fetchPlayersBatch(offset, limit) {
     try {
       const response = await axios.get(`${WALLET_SERVICE_URL}/admin/wallets`, {
-        params: { type: 'player', limit, offset }
+        params: { type: 'player', limit, offset },
+        headers: getServiceHeaders()
       });
       return response.data?.data || [];
     } catch (error) {
@@ -571,7 +583,8 @@ class RevenueAggregationService {
   async calculatePlayerMetrics(player, startDate, endDate) {
     try {
       const response = await axios.get(`${WALLET_SERVICE_URL}/owner/${player.ownerId}`, {
-        params: { type: 'player' }
+        params: { type: 'player' },
+        headers: getServiceHeaders()
       });
       const wallet = response.data?.data;
 
@@ -590,7 +603,7 @@ class RevenueAggregationService {
         };
       }
 
-      const totalWinnings = wallet.totalWins || 0;
+      const totalWinnings = parseFloat(wallet.revenueBalance || 0);
       const totalLosses = wallet.totalLosses || 0;
       const netProfit = totalWinnings - totalLosses;
       const lifetimeValue = parseFloat(wallet.balance) || 0;

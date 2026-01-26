@@ -11,6 +11,7 @@ model PlayerStat {
   playerId            String    @id @db.Uuid
   userId              String    @db.Uuid
   username            String
+  clubId              String?   @db.Uuid
   agentUserId         String?   @db.Uuid  // Links to the User ID of the agent who referred this player
   lastActivityAt      DateTime? // Tracks the last time the player was active in the app
   totalDepositValue   Decimal   @db.Decimal(15, 2) @default("0") // Tracks total deposit value for commission calculation

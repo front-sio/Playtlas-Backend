@@ -11,61 +11,100 @@ const Vector2D = require('./server-vector2d');
 const { Maths, Point } = require('./server-maths');
 const logger = require('../../utils/logger');
 
-// AI difficulty profiles
+// AI difficulty profiles (enhanced for season play)
 const AI_PROFILES = {
   1: { // Easy
     name: 'Easy',
-    errorDegrees: 15,
+    errorDegrees: 12,
     powerVariance: 0.25,
-    missChance: 0.30,
-    thinkTime: 2000,
-    safetyPlayChance: 0.05,
+    missChance: 0.25,
+    thinkTime: 2500,
+    safetyPlayChance: 0.08,
     trialsPerShot: 10
   },
-  2: { // Medium
-    name: 'Medium',
+  2: { // Medium-Easy  
+    name: 'Medium-Easy',
     errorDegrees: 8,
+    powerVariance: 0.20,
+    missChance: 0.18,
+    thinkTime: 2200,
+    safetyPlayChance: 0.12,
+    trialsPerShot: 12
+  },
+  3: { // Medium
+    name: 'Medium',
+    errorDegrees: 6,
     powerVariance: 0.15,
-    missChance: 0.15,
-    thinkTime: 1500,
+    missChance: 0.12,
+    thinkTime: 2000,
     safetyPlayChance: 0.15,
     trialsPerShot: 15
   },
-  3: { // Hard
-    name: 'Hard',
+  4: { // Medium-Hard
+    name: 'Medium-Hard',
     errorDegrees: 4,
-    powerVariance: 0.10,
+    powerVariance: 0.12,
     missChance: 0.08,
-    thinkTime: 1200,
-    safetyPlayChance: 0.25,
-    trialsPerShot: 20
+    thinkTime: 1800,
+    safetyPlayChance: 0.18,
+    trialsPerShot: 18
   },
-  4: { // Expert
-    name: 'Expert',
-    errorDegrees: 2,
-    powerVariance: 0.05,
-    missChance: 0.03,
-    thinkTime: 1000,
-    safetyPlayChance: 0.35,
-    trialsPerShot: 25
-  },
-  5: { // Master
-    name: 'Master',
-    errorDegrees: 1,
-    powerVariance: 0.03,
-    missChance: 0.01,
-    thinkTime: 800,
-    safetyPlayChance: 0.45,
-    trialsPerShot: 30
+  5: { // Hard
+    name: 'Hard',
+    errorDegrees: 3,
+    powerVariance: 0.10,
+    missChance: 0.06,
+    thinkTime: 1500,
+    safetyPlayChance: 0.22,
+    trialsPerShot: 22
   }
 };
 
+const AI_PROFILE_RANGE = {
+  errorDegrees: { min: 0.5, max: 12 }, // Much more precise at high levels
+  powerVariance: { min: 0.02, max: 0.25 }, 
+  missChance: { min: 0.001, max: 0.25 }, // Nearly perfect at top levels
+  thinkTime: { min: 800, max: 2500 },
+  safetyPlayChance: { min: 0.05, max: 0.35 }, // More strategic at higher levels
+  trialsPerShot: { min: 8, max: 100 } // Much more calculation power
+};
+
+function lerp(min, max, t) {
+  return min + (max - min) * t;
+}
+
+function getProfileForLevel(level) {
+  const clamped = Math.max(1, Math.min(100, Math.round(level || 8))); // Cap at level 100, default to level 8
+  if (clamped <= 5) {
+    return AI_PROFILES[clamped];
+  }
+  
+  // Advanced difficulty curve for levels 6-100 with much more precision
+  const t = Math.pow((clamped - 1) / 99, 0.6); // More gradual progression curve for 100 levels
+  
+  return {
+    name: `Level ${clamped}`,
+    errorDegrees: lerp(AI_PROFILE_RANGE.errorDegrees.max, AI_PROFILE_RANGE.errorDegrees.min, t),
+    powerVariance: lerp(AI_PROFILE_RANGE.powerVariance.max, AI_PROFILE_RANGE.powerVariance.min, t),
+    missChance: lerp(AI_PROFILE_RANGE.missChance.max, AI_PROFILE_RANGE.missChance.min, t),
+    thinkTime: Math.round(lerp(AI_PROFILE_RANGE.thinkTime.max, AI_PROFILE_RANGE.thinkTime.min, t)),
+    safetyPlayChance: lerp(AI_PROFILE_RANGE.safetyPlayChance.min, AI_PROFILE_RANGE.safetyPlayChance.max, t),
+    trialsPerShot: Math.round(lerp(AI_PROFILE_RANGE.trialsPerShot.min, AI_PROFILE_RANGE.trialsPerShot.max, t))
+  };
+}
+
 class PoolAI {
-  constructor(difficulty = 3, tableGeometry) {
-    this.difficulty = Math.max(1, Math.min(5, difficulty));
-    this.profile = AI_PROFILES[this.difficulty];
+  constructor(difficulty = 8, tableGeometry) { // Default to level 8 for competitive play
+    this.difficulty = Math.max(1, Math.min(100, difficulty)); // Cap at level 100
+    this.profile = getProfileForLevel(this.difficulty);
     this.table = tableGeometry;
     this.ballRadius = tableGeometry.ballRadius;
+    this.strategicMemory = []; // Remember previous shots for strategy
+    this.gameAnalysis = { // Advanced game state analysis
+      preferredTargets: [],
+      dangerousShots: [],
+      safetyPositions: []
+    };
   }
 
   /**
@@ -397,22 +436,73 @@ class PoolAI {
   selectBestShot(shotOptions) {
     if (shotOptions.length === 0) return null;
 
-    // Sort by score (higher is better)
+    // Enhanced shot selection with strategic considerations
+    shotOptions.forEach(shot => {
+      // Add strategic bonuses
+      if (shot.type === 'direct') {
+        shot.score += 20; // Prefer direct shots
+      }
+      
+      // Bonus for easier target positions
+      if (shot.difficulty < 30) {
+        shot.score += 15;
+      }
+      
+      // Penalty for very risky shots at lower difficulties
+      if (this.difficulty < 50 && shot.difficulty > 70) {
+        shot.score -= 25;
+      }
+      
+      // High difficulty AI prefers precise shots
+      if (this.difficulty > 75 && shot.difficulty > 60) {
+        shot.score += 10; // Advanced AI can handle difficult shots
+      }
+    });
+
+    // Sort by enhanced score
     shotOptions.sort((a, b) => b.score - a.score);
 
-    // Select from top shots based on difficulty
-    // Easy AI might pick from top 5, expert from top 1-2
-    const selectionRange = Math.max(1, Math.floor(shotOptions.length * (1 - this.difficulty / 6)));
-    const selectedIndex = Math.floor(Math.random() * Math.min(selectionRange, shotOptions.length));
+    // Smart selection based on difficulty
+    let selectionRange;
+    if (this.difficulty >= 80) {
+      selectionRange = 1; // Expert AI picks best shot
+    } else if (this.difficulty >= 50) {
+      selectionRange = Math.min(2, shotOptions.length); // Pick from top 2
+    } else if (this.difficulty >= 20) {
+      selectionRange = Math.min(3, shotOptions.length); // Pick from top 3
+    } else {
+      selectionRange = Math.min(5, shotOptions.length); // Beginner picks from top 5
+    }
     
-    return shotOptions[selectedIndex];
+    const selectedIndex = Math.floor(Math.random() * selectionRange);
+    const selectedShot = shotOptions[selectedIndex];
+    
+    // Store strategic memory
+    this.strategicMemory.push({
+      difficulty: selectedShot.difficulty,
+      score: selectedShot.score,
+      type: selectedShot.type
+    });
+    
+    // Keep only recent memory
+    if (this.strategicMemory.length > 10) {
+      this.strategicMemory.shift();
+    }
+    
+    return selectedShot;
   }
 
   applyAiError(shot) {
     if (!shot) return shot;
 
-    // Apply direction error
-    const errorRadians = (this.profile.errorDegrees * (Math.PI / 180)) * (Math.random() - 0.5);
+    // Reduced error application for competitive play
+    const skillFactor = Math.min(this.difficulty / 100, 0.95); // Cap at 95% skill
+    
+    // Apply direction error with intelligence scaling
+    const baseErrorRadians = (this.profile.errorDegrees * (Math.PI / 180)) * (Math.random() - 0.5);
+    const intelligenceReduction = skillFactor * 0.7; // High skill reduces error significantly
+    const errorRadians = baseErrorRadians * (1 - intelligenceReduction);
+    
     const currentAngle = Math.atan2(shot.direction.y, shot.direction.x);
     const newAngle = currentAngle + errorRadians;
     
@@ -421,24 +511,30 @@ class PoolAI {
       y: Math.sin(newAngle)
     };
 
-    // Apply power variance
-    const powerError = 1 + (Math.random() - 0.5) * this.profile.powerVariance;
+    // Intelligent power variance
+    const powerError = 1 + (Math.random() - 0.5) * this.profile.powerVariance * (1 - skillFactor * 0.5);
     shot.power = Math.min(Math.max(shot.power * powerError, 500), 6000);
 
-    // Random miss chance
-    if (Math.random() < this.profile.missChance) {
-      // Intentional miss - add more error
-      const missError = (Math.random() - 0.5) * 30 * (Math.PI / 180);
-      const missAngle = newAngle + missError;
+    // Smart miss probability - high skill AI rarely misses intentionally
+    const adjustedMissChance = this.profile.missChance * (1 - skillFactor * 0.8);
+    if (Math.random() < adjustedMissChance) {
+      // Intelligent miss - still strategic, not random
+      const strategicMissError = (Math.random() - 0.5) * 15 * (Math.PI / 180) * (1 - skillFactor);
+      const missAngle = newAngle + strategicMissError;
       shot.direction = {
         x: Math.cos(missAngle),
         y: Math.sin(missAngle)
       };
     }
 
-    // Usually no spin for AI (can add for higher difficulty)
-    shot.screw = 0;
-    shot.english = 0;
+    // Advanced AI can use spin for better control
+    if (this.difficulty > 60) {
+      shot.screw = (Math.random() - 0.5) * 0.3 * skillFactor; // Slight backspin for control
+      shot.english = (Math.random() - 0.5) * 0.2 * skillFactor; // Minimal side spin
+    } else {
+      shot.screw = 0;
+      shot.english = 0;
+    }
 
     return shot;
   }

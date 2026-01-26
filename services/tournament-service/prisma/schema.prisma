@@ -8,25 +8,33 @@ datasource db {
 }
 
 model Tournament {
-  tournamentId        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name                String
-  description         String?
-  entryFee            Decimal   @db.Decimal(15, 2)
-  maxPlayers          Int       @default(32)
-  currentPlayers      Int       @default(0)
-  status              String    @default("upcoming")
-  stage               String    @default("registration")
-  competitionWalletId String?   @db.Uuid
-  startTime           DateTime?
-  endTime             DateTime?
-  matchDuration       Int       @default(1200) @map("season_duration")
-  winnerId            String?   @db.Uuid
-  metadata            Json?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  tournamentId         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clubId               String    @db.Uuid
+  name                 String
+  description          String?
+  entryFee             Decimal   @db.Decimal(15, 2)
+  maxPlayers           Int       @default(32)
+  currentPlayers       Int       @default(0)
+  status               String    @default("upcoming")
+  stage                String    @default("registration")
+  competitionWalletId  String?   @db.Uuid
+  startTime            DateTime?
+  endTime              DateTime?
+  matchDuration        Int       @default(1200) @map("season_duration")
+  winnerId             String?   @db.Uuid
+  metadata             Json?
+  
+  // Club operating hours and match settings
+  operatingHoursStart  String    @default("11:00:00") @map("operating_hours_start")
+  operatingHoursEnd    String    @default("23:00:00") @map("operating_hours_end")
+  matchDurationMinutes Int       @default(5) @map("match_duration_minutes")
+  
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  seasons             Season[]
-  tournamentPlayers   TournamentPlayer[]
+  seasons              Season[]
+  tournamentPlayers    TournamentPlayer[]
+  club                 Club     @relation(fields: [clubId], references: [clubId], onDelete: Restrict)
 
   @@map("tournaments")
 }
@@ -34,19 +42,101 @@ model Tournament {
 model Season {
   seasonId            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tournamentId        String    @db.Uuid
+  clubId              String    @db.Uuid
   seasonNumber        Int
   name                String?
   status              String    @default("active")
   joiningClosed       Boolean   @default(false)
   matchesGenerated    Boolean   @default(false)
+  finalMatchId        String?   @db.Uuid
+  completedAt         DateTime?
+  finalizedByJobId    String?
+  errorReason         String?
   startTime           DateTime
   endTime             DateTime
   createdAt           DateTime  @default(now())
 
   tournament          Tournament @relation(fields: [tournamentId], references: [tournamentId], onDelete: Cascade)
+  club                Club      @relation(fields: [clubId], references: [clubId], onDelete: Restrict)
   tournamentPlayers   TournamentPlayer[]
+  groupStandings      GroupStanding[]
+  bracketMatches      BracketMatch[]
+  deviceSchedules     DeviceSchedule[]
 
   @@map("seasons")
+}
+
+model GroupStanding {
+  standingId         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("standing_id")
+  seasonId           String   @db.Uuid @map("season_id")
+  groupLabel         String   @map("group_label") @db.VarChar(1)
+  playerId           String   @db.Uuid @map("player_id")
+  
+  // Stats
+  matchesPlayed      Int      @default(0) @map("matches_played")
+  wins               Int      @default(0)
+  losses             Int      @default(0)
+  pointsFor          Int      @default(0) @map("points_for")
+  pointsAgainst      Int      @default(0) @map("points_against")
+  
+  // Calculated fields
+  winPercentage      Decimal  @default(0) @map("win_percentage") @db.Decimal(5,4)
+  pointDifference    Int      @default(0) @map("point_difference")
+  
+  // Ranking
+  groupPosition      Int?     @map("group_position")
+  qualified          Boolean  @default(false)
+  
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  season             Season   @relation(fields: [seasonId], references: [seasonId], onDelete: Cascade)
+
+  @@unique([seasonId, groupLabel, playerId])
+  @@map("group_standings")
+}
+
+model DeviceSchedule {
+  scheduleId  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("schedule_id")
+  deviceId    String    @db.Uuid @map("device_id")
+  clubId      String    @db.Uuid @map("club_id")
+  seasonId    String    @db.Uuid @map("season_id")
+  
+  // Time slot
+  startTime   DateTime  @map("start_time")
+  endTime     DateTime  @map("end_time")
+  
+  // Assignment
+  matchId     String?   @db.Uuid @map("match_id")
+  status      String    @default("AVAILABLE")
+  
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  season      Season    @relation(fields: [seasonId], references: [seasonId], onDelete: Cascade)
+
+  @@unique([deviceId, startTime])
+  @@map("device_schedules")
+}
+
+model BracketMatch {
+  bracketId       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("bracket_id")
+  seasonId        String   @db.Uuid @map("season_id")
+  round           String
+  position        Int      // Position in bracket
+  
+  // Match reference
+  matchId         String?  @unique @db.Uuid @map("match_id")
+  
+  // Bracket metadata
+  bracketLevel    Int      @map("bracket_level") // 1=Final, 2=SF, 3=QF, 4=R16
+  parentMatchId   String?  @db.Uuid @map("parent_match_id")
+  
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  season          Season   @relation(fields: [seasonId], references: [seasonId], onDelete: Cascade)
+
+  @@unique([seasonId, round, position])
+  @@map("bracket_matches")
 }
 
 model TournamentPlayer {
@@ -73,4 +163,18 @@ model TournamentCommandLog {
   createdAt           DateTime @default(now())
 
   @@map("tournament_command_logs")
+}
+
+model Club {
+  clubId              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String
+  locationText        String?
+  status              String    @default("active")
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  tournaments         Tournament[]
+  seasons             Season[]
+
+  @@map("clubs")
 }

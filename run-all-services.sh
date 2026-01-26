@@ -16,6 +16,7 @@ SERVICES=(
   "services/admin-service"
   "services/agent-service"
   "services/auth-service"
+  "services/game-service"
   "services/matchmaking-service"
   "services/notification-service"
   "services/payment-service"

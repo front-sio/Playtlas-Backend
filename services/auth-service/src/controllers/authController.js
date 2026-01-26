@@ -6,8 +6,13 @@ const logger = require('../utils/logger');
 const { publishEvent, Topics } = require('../../../../shared');
 const { enqueueOtpJob } = require('../utils/otpQueue');
 const { createVerificationCode, verifyCode, resendVerificationCode } = require('../utils/verificationHelper');
-const { authenticate, authorize } = require('../middlewares/authMiddleware'); 
+const { authenticate, authorize } = require('../middlewares/authMiddleware');
 const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3002';
+const AGENT_SERVICE_URL = process.env.AGENT_SERVICE_URL || 'http://localhost:3010';
+const SERVICE_JWT_TOKEN = process.env.SERVICE_JWT_TOKEN;
+const MAX_AVATAR_LENGTH = Number(process.env.AVATAR_MAX_LENGTH || 2000000);
+let cachedServiceToken = null;
+let cachedServiceTokenExpiry = 0;
 
 const generateTokens = (userId, role) => {
   const accessToken = jwt.sign({ userId, role }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN });
@@ -25,9 +30,45 @@ const normalizePhoneNumber = (phoneNumber, countryCode = '+255') => {
   return phoneNumber;
 };
 
+const getServiceToken = () => {
+  if (SERVICE_JWT_TOKEN) return SERVICE_JWT_TOKEN;
+  const now = Date.now();
+  if (cachedServiceToken && now < cachedServiceTokenExpiry) {
+    return cachedServiceToken;
+  }
+  if (!process.env.JWT_SECRET) return null;
+  try {
+    const token = jwt.sign({ userId: 'system', role: 'service' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    cachedServiceToken = token;
+    cachedServiceTokenExpiry = now + 4 * 60 * 1000;
+    return token;
+  } catch (err) {
+    logger.error({ err }, '[auth] Failed to create service token');
+    return null;
+  }
+};
+
+const updateAgentStatus = async (userId, status) => {
+  const token = getServiceToken();
+  if (!token) return;
+  try {
+    await axios.post(
+      `${AGENT_SERVICE_URL}/internal/agents/status`,
+      { userId, status },
+      { headers: { Authorization: `Bearer ${token}` }, timeout: 5000 }
+    );
+  } catch (error) {
+    logger.warn('[auth] Failed to update agent status', {
+      userId,
+      status,
+      error: error?.response?.data?.error || error?.message
+    });
+  }
+};
+
 exports.createUser = async (req, res) => {
   try {
-    const { username, email, password, phoneNumber, firstName, lastName, gender, role } = req.body;
+    const { username, email, password, phoneNumber, firstName, lastName, gender, role, clubId } = req.body;
     if (!username || !email || !password || !phoneNumber || !firstName || !lastName || !gender) {
       return res.status(400).json({ success: false, error: 'Missing required fields' });
     }
@@ -59,13 +100,15 @@ exports.createUser = async (req, res) => {
         gender,
         role: role || 'player',
         isVerified: true,
-        verificationMethod: 'admin'
+        verificationMethod: 'admin',
+        clubId: clubId || null
       }
     });
 
     if ((newUser.role || 'player') === 'player') {
       publishEvent(Topics.PLAYER_REGISTERED, {
         userId: newUser.userId,
+        clubId: newUser.clubId,
         username,
         email,
         phoneNumber: normalizedPhoneNumber,
@@ -80,6 +123,7 @@ exports.createUser = async (req, res) => {
     if ((newUser.role || '').toLowerCase() === 'agent') {
       publishEvent(Topics.AGENT_REGISTERED, {
         userId: newUser.userId,
+        clubId: newUser.clubId,
         username,
         email,
         phoneNumber: normalizedPhoneNumber,
@@ -108,7 +152,7 @@ exports.createUser = async (req, res) => {
 
 exports.register = async (req, res) => {
   try {
-    const { username, email, password, phoneNumber, firstName, lastName, gender, channel } = req.body;
+    const { username, email, password, phoneNumber, firstName, lastName, gender, channel, clubId, registeredByAgentId } = req.body;
     const verificationChannel = channel === 'sms' ? 'sms' : 'email';
 
     const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
@@ -137,7 +181,9 @@ exports.register = async (req, res) => {
         lastName,
         gender,
         isVerified: false,
-        verificationMethod: verificationChannel
+        verificationMethod: verificationChannel,
+        clubId: clubId || null,
+        registeredByAgentId: registeredByAgentId || null
       }
     });
 
@@ -161,6 +207,7 @@ exports.register = async (req, res) => {
     if (role === 'agent') {
       publishEvent(Topics.AGENT_REGISTERED, {
         userId: newUser.userId,
+        clubId: newUser.clubId,
         username,
         email,
         phoneNumber: normalizedPhoneNumber,
@@ -173,6 +220,8 @@ exports.register = async (req, res) => {
     } else {
       publishEvent(Topics.PLAYER_REGISTERED, {
         userId: newUser.userId,
+        clubId: newUser.clubId,
+        agentUserId: newUser.registeredByAgentId || null,
         username,
         email,
         phoneNumber: normalizedPhoneNumber,
@@ -217,7 +266,7 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     let { identifier, password } = req.body;
-    
+
     // Enhanced logging for debugging
     logger.info('Login attempt started', {
       identifier: identifier,
@@ -283,7 +332,7 @@ exports.login = async (req, res) => {
         userId: user.userId,
         email: user.email
       });
-      
+
       // Resend verification code
       try {
         let preferredChannel = user.verificationMethod === 'sms' ? 'sms' : 'email';
@@ -328,14 +377,18 @@ exports.login = async (req, res) => {
     await prisma.refreshToken.create({
       data: { userId: user.userId, token: tokens.refreshToken }
     });
-    
+
     await prisma.user.update({
       where: { userId: user.userId },
       data: { lastLogin: new Date() }
     });
 
+    if (String(user.role || '').toLowerCase() === 'agent') {
+      updateAgentStatus(user.userId, 'online');
+    }
+
     delete user.password;
-    
+
     const response = { success: true, data: { user, ...tokens } };
     logger.info('Login successful', {
       userId: user.userId,
@@ -403,12 +456,15 @@ exports.logout = async (req, res) => {
     const { refreshToken } = req.body;
     // Ensure user is authenticated before logging out
     if (!req.user || !req.user.userId) {
-       return res.status(401).json({ success: false, error: 'Authentication required for logout.' });
+      return res.status(401).json({ success: false, error: 'Authentication required for logout.' });
     }
     if (refreshToken) {
       await prisma.refreshToken.deleteMany({
         where: { token: refreshToken }
       });
+    }
+    if (String(req.user?.role || '').toLowerCase() === 'agent') {
+      updateAgentStatus(req.user.userId, 'offline');
     }
     res.json({ success: true, message: 'Logged out successfully' });
   } catch (error) {
@@ -432,6 +488,85 @@ exports.getCurrentUser = async (req, res) => {
   }
 };
 
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.user?.userId;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, error: 'currentPassword and newPassword are required' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { userId } });
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    const matches = await bcrypt.compare(currentPassword, user.password);
+    if (!matches) {
+      return res.status(400).json({ success: false, error: 'Current password is incorrect' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({
+      where: { userId },
+      data: { password: hashedPassword, updatedAt: new Date() }
+    });
+
+    res.json({ success: true, data: { message: 'Password changed successfully' } });
+  } catch (error) {
+    logger.error('Change password error:', error);
+    res.status(500).json({ success: false, error: 'Failed to change password' });
+  }
+};
+
+exports.updateAvatar = async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No image file uploaded' });
+    }
+
+    // Construct the URL path (relative to the server root or absolute if using a CDN/S3 in future)
+    // Here we assume the server serves 'public/uploads' at '/uploads'
+    // We need to know the base URL of the auth service or API gateway to form a full URL,
+    // or just store the relative path and let the frontend prepend the base URL.
+    // Storing relative path is safer for migration.
+    // However, the frontend expects a full URL or data URL.
+    // Let's store the relative path '/uploads/avatars/filename'.
+
+    const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+
+    const updatedUser = await prisma.user.update({
+      where: { userId },
+      data: { avatarUrl: avatarUrl, updatedAt: new Date() }
+    });
+
+    delete updatedUser.password;
+
+    // If we want to return a full URL, we can prepend the service URL here
+    // But for now, let's assume the frontend knows how to handle it or we return what we stored.
+    // Ideally, we should return a full URL if the frontend uses it directly in <img src>.
+    // The auth service URL is needed.
+    // Let's return the relative path and let the frontend handle it, OR prepend the API_URL.
+    // Actually, if we serve static files from auth-service, the URL is http://auth-service:port/uploads/...
+    // Via gateway: http://gateway/api/auth/uploads/... (if gateway proxies)
+    // But gateway usually proxies /api/auth to auth-service.
+    // So if auth-service serves /uploads, it might not be reachable via /api/auth/uploads unless configured.
+    // Ideally, we should have a dedicated /uploads route in auth-service that is proxied.
+    // Let's assume for now we return the relative path.
+
+    res.json({ success: true, data: updatedUser });
+  } catch (error) {
+    logger.error('Update avatar error:', error);
+    res.status(500).json({ success: false, error: 'Failed to update avatar' });
+  }
+};
+
 // Use authenticate and authorize middleware for updatePayoutPhone
 exports.updatePayoutPhone = async (req, res) => {
   try {
@@ -449,9 +584,9 @@ exports.updatePayoutPhone = async (req, res) => {
     // Note: Player role check added to authorize middleware.
     const allowedRoles = ['admin', 'superuser', 'player']; // Assuming players can update their own phones
     if (!allowedRoles.includes(req.user.role) || (req.user.role === 'player' && user.userId !== req.user.userId)) {
-       // If not admin and not the owner, deny access.
-       // This check might need refinement based on exact role permissions for updating others.
-       return res.status(403).json({ success: false, error: 'Forbidden: Insufficient permissions to update payout phone.' });
+      // If not admin and not the owner, deny access.
+      // This check might need refinement based on exact role permissions for updating others.
+      return res.status(403).json({ success: false, error: 'Forbidden: Insufficient permissions to update payout phone.' });
     }
 
     await prisma.user.update({
@@ -703,6 +838,41 @@ exports.listUsers = async (req, res) => {
   } catch (error) {
     logger.error('List users error:', error);
     res.status(500).json({ success: false, error: 'Failed to list users' });
+  }
+};
+
+exports.lookupUsersByIds = async (req, res) => {
+  try {
+    const rawIds = String(req.query.ids || '');
+    const ids = rawIds.split(',').map((id) => id.trim()).filter(Boolean);
+    if (ids.length === 0) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const users = await prisma.user.findMany({
+      where: { userId: { in: ids } },
+      select: {
+        userId: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        avatarUrl: true
+      }
+    });
+
+    const payload = users.map((user) => {
+      const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim();
+      return {
+        userId: user.userId,
+        displayName: user.username || fullName || user.userId,
+        avatarUrl: user.avatarUrl || null
+      };
+    });
+
+    res.json({ success: true, data: payload });
+  } catch (error) {
+    logger.error('Lookup users by ids error:', error);
+    res.status(500).json({ success: false, error: 'Failed to lookup users' });
   }
 };
 

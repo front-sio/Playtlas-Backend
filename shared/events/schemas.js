@@ -111,6 +111,21 @@ function validateSeasonCreated(payload) {
   return { ok: true, value: payload };
 }
 
+function validateSeasonMatchesGenerated(payload) {
+  if (!payload || !isString(payload.tournamentId)) return { ok: false, error: 'tournamentId is required' };
+  if (!isString(payload.seasonId)) return { ok: false, error: 'seasonId is required' };
+  if (typeof payload.matchesCreated !== 'number') return { ok: false, error: 'matchesCreated must be a number' };
+  if (typeof payload.scheduledCount !== 'number') return { ok: false, error: 'scheduledCount must be a number' };
+  return { ok: true, value: payload };
+}
+
+function validateSeasonMatchesFailed(payload) {
+  if (!payload || !isString(payload.tournamentId)) return { ok: false, error: 'tournamentId is required' };
+  if (!isString(payload.seasonId)) return { ok: false, error: 'seasonId is required' };
+  if (!isString(payload.error)) return { ok: false, error: 'error is required' };
+  return { ok: true, value: payload };
+}
+
 function validateMatchReady(payload) {
   if (!payload || !isString(payload.matchId)) return { ok: false, error: 'matchId is required' };
   if (!isString(payload.tournamentId)) return { ok: false, error: 'tournamentId is required' };
@@ -165,6 +180,8 @@ const validatorsByTopic = {
   'tournament.season_completed': validateSeasonCompleted,
   'tournament.season_cancelled': validateSeasonCancelled,
   'tournament.season_created': validateSeasonCreated,
+  'tournament.season_matches_generated': validateSeasonMatchesGenerated,
+  'tournament.season_matches_failed': validateSeasonMatchesFailed,
   'tournament.match_ready': validateMatchReady,
   'tournament.match_completed': validateMatchCompleted,
   'tournament.match_result': validateMatchResult,
@@ -179,6 +196,7 @@ const validatorsByTopic = {
   'tournament.command_result': validateTournamentCommandResult,
   'tournament.created': validateTournamentLifecycle,
   'tournament.started': validateTournamentLifecycle,
+  'tournament.resumed': validateTournamentLifecycle,
   'tournament.stopped': validateTournamentLifecycle,
   'tournament.cancelled': validateTournamentLifecycle,
   'tournament.updated': validateTournamentLifecycle,

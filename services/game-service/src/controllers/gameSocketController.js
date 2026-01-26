@@ -4,6 +4,7 @@ const logger = require('../utils/logger.js');
 const { publishEvent, Topics } = require('../../../../shared/events');
 const { EightBallEngine } = require('../engine/8ball');
 const { computePrizeDistribution } = require('./gameController.js');
+const { syncMatchResult } = require('../utils/matchmakingSync');
 
 const INSTANCE_ID = process.env.INSTANCE_ID || process.env.HOSTNAME || 'unknown';
 
@@ -17,6 +18,7 @@ const BROADCAST_FPS = Number(process.env.GAME_STATE_FPS || 30);
 const CAPTURE_STRIDE = Number(process.env.GAME_STATE_STRIDE || 6);
 const MAX_FRAMES = Number(process.env.GAME_STATE_MAX_FRAMES || 90);
 const DEBUG_STATE = process.env.DEBUG_GAME_STATE === 'true';
+const DEBUG_AI = process.env.DEBUG_AI === 'true' || DEBUG_STATE;
 const AI_PLAYER_ID = process.env.AI_PLAYER_ID || '04a942ce-af5f-4bde-9068-b9e2ee295fbf';
 const AI_THINKING_MIN_MS = Number(process.env.AI_THINKING_MIN_MS || 600);
 const AI_THINKING_MAX_MS = Number(process.env.AI_THINKING_MAX_MS || 1400);
@@ -27,13 +29,77 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function roundNumber(value, precision = 3) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return value;
+  const factor = Math.pow(10, precision);
+  return Math.round(value * factor) / factor;
+}
+
+function roundPoint(point) {
+  if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') return point;
+  return {
+    x: roundNumber(point.x),
+    y: roundNumber(point.y)
+  };
+}
+
+function buildRulesSummary(rulesState) {
+  if (!rulesState) return null;
+  return {
+    turn: rulesState.turn,
+    winner: rulesState.winner,
+    foul: rulesState.foul,
+    foulType: rulesState.foulType,
+    shotNumber: rulesState.shotNumber,
+    breakComplete: rulesState.breakComplete,
+    ballInHand: rulesState.ballInHand,
+    p1Target: rulesState.p1Target,
+    p2Target: rulesState.p2Target,
+    p1Score: rulesState.p1Score,
+    p2Score: rulesState.p2Score,
+    p1BallsRemaining: rulesState.p1BallsRemaining,
+    p2BallsRemaining: rulesState.p2BallsRemaining,
+    lastShotResult: rulesState.lastShotResult
+  };
+}
+
+function buildShotSummary(shot, shotResult) {
+  if (!shot) return null;
+  return {
+    power: roundNumber(shot.power),
+    direction: roundPoint(shot.direction),
+    cueBallPosition: roundPoint(shot.cueBallPosition),
+    screw: roundNumber(shot.screw),
+    english: roundNumber(shot.english),
+    firstContact: shotResult?.firstContact ?? null,
+    pocketed: shotResult?.pocketed || [],
+    cueScratch: shotResult?.cueScratch ?? false,
+    railContactAfterFirstHit: shotResult?.railContactAfterFirstHit ?? null
+  };
+}
+
+function resolveActorSide(session, playerId) {
+  if (!session || !playerId) return null;
+  if (session.player1Id === playerId) return 'p1';
+  if (session.player2Id === playerId) return 'p2';
+  return null;
+}
+
+function logAiDebug(context, message) {
+  if (DEBUG_AI) {
+    logger.info(message, context);
+    return;
+  }
+  logger.debug(message, context);
+}
+
 function parseSessionMetadata(session) {
   if (!session?.metadata) return {};
   if (typeof session.metadata === 'string') {
     try {
       return JSON.parse(session.metadata || '{}');
     } catch (err) {
-      logger.warn({ err, sessionId: session.sessionId }, 'Failed to parse game session metadata');
+      logger.warn('Failed to parse game session metadata', { err, sessionId: session.sessionId });
       return {};
     }
   }
@@ -71,9 +137,17 @@ function getAiSide(session) {
 }
 
 function getAiDifficulty(metadata) {
-  const raw = Number(metadata?.aiDifficulty || 5);
-  if (!Number.isFinite(raw)) return 5;
-  return clamp(Math.round(raw), 1, 100);
+  // Check for explicit difficulty settings
+  const raw = Number(metadata?.aiDifficulty ?? metadata?.ai ?? metadata?.level);
+  
+  // Tournament games should have competitive but fair AI difficulty
+  const isTournamentGame = Boolean(metadata?.tournamentId);
+  const maxDifficulty = isTournamentGame ? 50 : 100;
+  const defaultDifficulty = isTournamentGame ? 35 : 15;
+  
+  if (!Number.isFinite(raw)) return defaultDifficulty;
+  
+  return clamp(Math.round(raw), 6, maxDifficulty);
 }
 
 function findTargetBall(engine, targetType) {
@@ -391,7 +465,7 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
     const engine = await getOrCreateEngine(session);
     resolvedRulesState = engine?.state?.rulesState || {};
   } catch (err) {
-    logger.warn({ err, sessionId }, 'Failed to load engine rules state for scores');
+    logger.warn('Failed to load engine rules state for scores', { err, sessionId });
   }
   const player1Score = Number(resolvedRulesState?.p1Score || 0);
   const player2Score = Number(resolvedRulesState?.p2Score || 0);
@@ -405,6 +479,20 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
   const prizeAmount = prizeDistribution.netPrizePool;
   const platformFee = prizeDistribution.platformFee;
   const platformFeePercent = prizeDistribution.feePercent;
+  const currency = sessionMetadata.currency || 'TSH';
+  const loserId = winnerId === session.player1Id ? session.player2Id : session.player1Id;
+  const completedAt = new Date();
+  const startTime = session.startedAt
+    ? new Date(session.startedAt)
+    : sessionMetadata?.startTime
+      ? new Date(sessionMetadata.startTime)
+      : session.createdAt
+        ? new Date(session.createdAt)
+        : null;
+  const matchDurationSeconds = startTime
+    ? Math.max(0, Math.round((completedAt.getTime() - startTime.getTime()) / 1000))
+    : null;
+  const resultReason = metadata?.reason || sessionMetadata?.reason || 'completed';
 
   const enhancedResult = {
     winnerId,
@@ -413,7 +501,8 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
     prizeAmount,
     netPrizePool: prizeDistribution.netPrizePool,
     platformFee,
-    feePercent: platformFeePercent
+    feePercent: platformFeePercent,
+    currency
   };
 
   await prisma.gameSession.update({
@@ -422,7 +511,7 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
       status: 'completed',
       result: JSON.stringify(enhancedResult),
       metadata: mergeSessionMetadata(session, metadata),
-      endedAt: new Date()
+      endedAt: completedAt
     }
   });
 
@@ -431,10 +520,26 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
     player1Score,
     player2Score,
     prizeAmount,
-    timestamp: new Date().toISOString()
+    currency,
+    matchId: sessionMetadata.matchId || metadata?.matchId || null,
+    reason: resultReason,
+    matchDuration: matchDurationSeconds,
+    timestamp: completedAt.toISOString()
   });
 
   const matchId = sessionMetadata.matchId || metadata?.matchId;
+  io.to(`game:${sessionId}`).emit('match_result', {
+    matchId: matchId || null,
+    winnerId,
+    loserId,
+    player1Score,
+    player2Score,
+    prizeAmount,
+    currency,
+    reason: resultReason,
+    matchDuration: matchDurationSeconds,
+    serverTime: completedAt.toISOString()
+  });
   if (matchId) {
     try {
       await publishEvent(Topics.MATCH_RESULT, {
@@ -442,14 +547,30 @@ async function completeGameSession({ io, sessionId, winnerKey, winnerId: explici
         winnerId,
         player1Score,
         player2Score,
+        matchDuration: matchDurationSeconds,
+        reason: resultReason,
+        completedAt: completedAt.toISOString(),
         tournamentId: sessionMetadata.tournamentId || null,
         seasonId: sessionMetadata.seasonId || null
       });
     } catch (matchErr) {
-      logger.error({ err: matchErr, matchId }, 'Failed to publish match result event');
+      logger.error('Failed to publish match result event', { err: matchErr, matchId });
+    }
+
+    try {
+      await syncMatchResult(matchId, {
+        winnerId,
+        player1Score,
+        player2Score,
+        matchDuration: matchDurationSeconds,
+        reason: resultReason,
+        completedAt: completedAt.toISOString()
+      });
+    } catch (syncErr) {
+      logger.warn({ err: syncErr, matchId }, '[game-service] Match result sync failed');
     }
   } else {
-    logger.warn({ sessionId }, 'Missing matchId in game session metadata');
+    logger.warn('Missing matchId in game session metadata', { sessionId });
   }
 
   logger.info(`Game session ${sessionId} completed. Winner: ${winnerId}, Prize: ${prizeAmount}`);
@@ -469,22 +590,27 @@ function checkMatchTimeout(session) {
     sessionMetadata = session.metadata;
   }
 
+  const isHybrid = sessionMetadata?.hybridMode || sessionMetadata?.hybrid || sessionMetadata?.authority === 'hybrid';
+  if (isHybrid) {
+    return false;
+  }
+
   const maxDurationSeconds = sessionMetadata.maxDurationSeconds || 300;
   
   // FIXED: Use actual game start time, not session creation time
   let startTime;
   
-  // Priority 1: Explicit startTime in metadata (set when game actually starts)
-  if (sessionMetadata.startTime) {
-    startTime = new Date(sessionMetadata.startTime);
-  }
-  // Priority 2: startedAt field (when session becomes active)
-  else if (session.startedAt) {
+  // Priority 1: startedAt field (when session becomes active)
+  if (session.startedAt) {
     startTime = new Date(session.startedAt);
+  }
+  // Priority 2: Explicit startTime in metadata (set when game actually starts)
+  else if (sessionMetadata.startTime) {
+    startTime = new Date(sessionMetadata.startTime);
   }
   // Priority 3: If no start time, game hasn't started yet - don't timeout
   else {
-    logger.info({ sessionId: session.sessionId }, 'No start time found - game not started yet');
+    logger.info('No start time found - game not started yet', { sessionId: session.sessionId });
     return false;
   }
     
@@ -493,19 +619,19 @@ function checkMatchTimeout(session) {
 
   // Add safety check for invalid dates
   if (!startTime || isNaN(startTime.getTime())) {
-    logger.warn({ sessionId: session.sessionId }, 'Invalid start time detected');
+    logger.warn('Invalid start time detected', { sessionId: session.sessionId });
     return false;
   }
 
   const isExpired = elapsedSeconds >= maxDurationSeconds;
   
   if (isExpired) {
-    logger.info({ 
+    logger.info('Session timeout detected', { 
       sessionId: session.sessionId, 
       elapsedSeconds: Math.round(elapsedSeconds), 
       maxDurationSeconds,
       startTime: startTime.toISOString()
-    }, 'Session timeout detected');
+    });
   }
 
   return isExpired;
@@ -552,12 +678,14 @@ function buildClientStateFromSnapshot(session, engine, snapshot) {
   }
   
   const maxDurationSeconds = sessionMetadata.maxDurationSeconds || 300;
-  // Use proper match timing - prefer actual start time over scheduled time
-  const startTime = sessionMetadata.startTime ? 
-    new Date(sessionMetadata.startTime) : 
-    sessionMetadata.scheduledTime ? 
-      new Date(sessionMetadata.scheduledTime) : 
-      new Date(session.startedAt || session.createdAt);
+  // Use proper match timing - prefer session startedAt over metadata timestamps
+  const startTime = session.startedAt ?
+    new Date(session.startedAt) :
+    sessionMetadata.startTime ?
+      new Date(sessionMetadata.startTime) :
+      sessionMetadata.scheduledTime ?
+        new Date(sessionMetadata.scheduledTime) :
+        new Date(session.createdAt);
   
   const now = new Date();
   const elapsedSeconds = Math.max(0, (now - startTime) / 1000);
@@ -656,6 +784,22 @@ async function applyShotAndBroadcast({ io, session, engine, turnKey, shot }) {
     }
   });
 
+  if (DEBUG_STATE) {
+    const aiSide = getAiSide(session);
+    const rulesSummary = buildRulesSummary(shotResult.rulesState || engine.state.rulesState);
+    const currentPlayerId = rulesSummary?.turn
+      ? (rulesSummary.turn === 'p1' ? session.player1Id : session.player2Id)
+      : null;
+    logger.info('[game-state] Shot applied', {
+      sessionId: session.sessionId,
+      actorSide: turnKey,
+      actorType: aiSide === turnKey ? 'ai' : 'player',
+      currentPlayerId,
+      shot: buildShotSummary(shot, shotResult.shotResult),
+      rules: rulesSummary
+    });
+  }
+
   if (shotResult.frames && shotResult.frames.length > 0) {
     broadcastFrames({ io, session, engine, frames: shotResult.frames });
   } else {
@@ -665,12 +809,12 @@ async function applyShotAndBroadcast({ io, session, engine, turnKey, shot }) {
       timestamp: new Date().toISOString()
     });
     if (DEBUG_STATE) {
-      logger.info({
+      logger.info('[game-state] game:state_updated payload', {
         sessionId: session.sessionId,
         currentPlayer: updatedState?.currentPlayer,
         turn: updatedState?.turn,
         ballCount: updatedState?.clientState?.balls?.length
-      }, '[game-state] game:state_updated payload');
+      });
     }
   }
 
@@ -680,7 +824,7 @@ async function applyShotAndBroadcast({ io, session, engine, turnKey, shot }) {
 async function scheduleAiTurn({ io, session, engine }) {
   const aiSide = getAiSide(session);
   if (!aiSide) {
-    logger.debug({ sessionId: session.sessionId }, '[ai] No AI side detected, skipping AI turn');
+    logAiDebug({ sessionId: session.sessionId }, '[ai] No AI side detected, skipping AI turn');
     return;
   }
   
@@ -690,40 +834,40 @@ async function scheduleAiTurn({ io, session, engine }) {
   const hasAiPlayer = aiSide !== null;
   
   if (!hasAiGameType && !hasAiPlayer) {
-    logger.debug({ sessionId: session.sessionId, gameType: metadata?.gameType }, '[ai] Game type not AI compatible and no AI player detected, skipping AI turn');
+    logAiDebug({ sessionId: session.sessionId, gameType: metadata?.gameType }, '[ai] Game type not AI compatible and no AI player detected, skipping AI turn');
     return;
   }
   
   if (!hasAiGameType) {
-    logger.info({ sessionId: session.sessionId, aiSide }, '[ai] AI player detected without explicit game type - proceeding with AI turn');
+    logger.info('[ai] AI player detected without explicit game type - proceeding with AI turn', { sessionId: session.sessionId, aiSide });
   }
   
   const rulesState = engine.state.rulesState || {};
   const turnKey = rulesState.turn || 'p1';
   
-  logger.info({ 
+  logger.info('[ai] Turn check', { 
     sessionId: session.sessionId, 
     currentTurn: turnKey, 
     aiSide, 
     isAiTurn: turnKey === aiSide,
     hasWinner: !!engine.state.winner,
     isLocked: !!aiShotLocks.get(session.sessionId)
-  }, '[ai] Turn check');
+  });
   
   if (turnKey !== aiSide) {
-    logger.debug({ sessionId: session.sessionId, currentTurn: turnKey, aiSide }, '[ai] Not AI turn, skipping');
+    logAiDebug({ sessionId: session.sessionId, currentTurn: turnKey, aiSide }, '[ai] Not AI turn, skipping');
     return;
   }
   if (engine.state.winner) {
-    logger.debug({ sessionId: session.sessionId, winner: engine.state.winner }, '[ai] Game already has winner, skipping AI turn');
+    logAiDebug({ sessionId: session.sessionId, winner: engine.state.winner }, '[ai] Game already has winner, skipping AI turn');
     return;
   }
   if (aiShotLocks.get(session.sessionId)) {
-    logger.debug({ sessionId: session.sessionId }, '[ai] AI shot already in progress, skipping');
+    logAiDebug({ sessionId: session.sessionId }, '[ai] AI shot already in progress, skipping');
     return;
   }
 
-  logger.info({ sessionId: session.sessionId, aiSide, difficulty: getAiDifficulty(metadata) }, '[ai] Scheduling AI turn');
+  logger.info('[ai] Scheduling AI turn', { sessionId: session.sessionId, aiSide, difficulty: getAiDifficulty(metadata) });
   
   aiShotLocks.set(session.sessionId, true);
   const delay = clamp(
@@ -735,26 +879,88 @@ async function scheduleAiTurn({ io, session, engine }) {
   setTimeout(async () => {
     try {
       const difficulty = getAiDifficulty(metadata);
-      logger.info({ sessionId: session.sessionId, aiSide, difficulty, delay }, '[ai] Executing AI turn after delay');
+      logger.info('[ai] Executing AI turn after delay', { sessionId: session.sessionId, aiSide, difficulty, delay });
       
-      const shotBase = chooseAiShot(engine, aiSide, difficulty);
-      const fallbackPlacement = engine.state.cueBallInHand && !shotBase.cueBallPosition
-        ? { x: 0, y: 0 }
-        : undefined;
+      if (DEBUG_AI) {
+        const liveRulesState = engine.state.rulesState || {};
+        const targetType = aiSide === 'p1' ? liveRulesState.p1Target : liveRulesState.p2Target;
+        const targetBall = findTargetBall(engine, targetType);
+        logger.info('[ai] Pre-shot state', {
+          sessionId: session.sessionId,
+          aiSide,
+          targetType,
+          targetBallId: targetBall?.id ?? null,
+          cueBallInHand: !!engine.state.cueBallInHand,
+          rules: buildRulesSummary(liveRulesState)
+        });
+      }
+
+      let shotBase = null;
+      try {
+        shotBase = chooseAiShot(engine, aiSide, difficulty);
+      } catch (error) {
+        logger.warn('[ai] Shot selection failed, using fallback', {
+          sessionId: session.sessionId,
+          aiSide,
+          error: error?.message || error
+        });
+        if (error?.stack) {
+          logger.warn('[ai] Shot selection stack', { sessionId: session.sessionId, stack: error.stack });
+        }
+      }
+      if (!shotBase || !shotBase.direction || !Number.isFinite(shotBase.power)) {
+        const fallback = buildRandomShots(engine, 0.3, 1)[0];
+        shotBase = fallback || { direction: { x: 1, y: 0 }, power: engine?.config?.maxPower || 5000 };
+      }
+      if (!Number.isFinite(shotBase.power) || shotBase.power <= 0) {
+        shotBase.power = engine?.config?.maxPower ? engine.config.maxPower * 0.6 : 3000;
+      }
+      if (!shotBase.direction || !Number.isFinite(shotBase.direction.x) || !Number.isFinite(shotBase.direction.y)) {
+        shotBase.direction = { x: 1, y: 0 };
+      }
+      // Improved cue ball placement for AI when ball is in hand
+      let finalCueBallPosition = shotBase.cueBallPosition;
+      if (engine.state.cueBallInHand && !finalCueBallPosition) {
+        // Try multiple fallback positions for cue ball placement
+        const bounds = engine.getTableBounds();
+        const testPositions = [
+          { x: 0, y: 0 }, // Center
+          { x: bounds.left + 50, y: 0 }, // Left side
+          { x: bounds.right - 50, y: 0 }, // Right side  
+          { x: 0, y: bounds.top + 50 }, // Top center
+          { x: 0, y: bounds.bottom - 50 }, // Bottom center
+          { x: bounds.left + 100, y: bounds.top + 100 }, // Corner
+        ];
+        
+        for (const pos of testPositions) {
+          const testEngine = new EightBallEngine({ ...engine.config });
+          testEngine.loadState(engine.getSnapshot());
+          if (testEngine.placeCueBall(pos)) {
+            finalCueBallPosition = pos;
+            break;
+          }
+        }
+        
+        // If all positions fail, use the first valid position from engine
+        if (!finalCueBallPosition) {
+          finalCueBallPosition = { x: 0, y: 0 };
+        }
+      }
+      
       const shot = {
         direction: shotBase.direction,
         power: shotBase.power,
-        cueBallPosition: shotBase.cueBallPosition || fallbackPlacement,
+        cueBallPosition: finalCueBallPosition,
         screw: 0,
         english: 0
       };
 
-      logger.info({ 
+      logger.info('[ai] AI shot calculated', { 
         sessionId: session.sessionId, 
         power: shot.power, 
         direction: shot.direction,
         cueBallPosition: shot.cueBallPosition
-      }, '[ai] AI shot calculated');
+      });
 
       const applied = await applyShotAndBroadcast({
         io,
@@ -765,11 +971,18 @@ async function scheduleAiTurn({ io, session, engine }) {
       });
 
       if (!applied.ok) {
-        logger.warn({ sessionId: session.sessionId, error: applied.error }, '[ai] Shot rejected');
+      logger.warn('[ai] Shot rejected', { sessionId: session.sessionId, error: applied.error });
         return;
       }
 
-      logger.info({ sessionId: session.sessionId }, '[ai] AI shot applied successfully');
+      logger.info('[ai] AI shot applied successfully', { sessionId: session.sessionId });
+      if (DEBUG_AI) {
+        logger.info('[ai] Post-shot state', {
+          sessionId: session.sessionId,
+          aiSide,
+          rules: buildRulesSummary(applied.updatedState?.rulesState)
+        });
+      }
 
       if (applied.updatedState?.winner) {
         await completeGameSession({
@@ -783,7 +996,11 @@ async function scheduleAiTurn({ io, session, engine }) {
 
       await scheduleAiTurn({ io, session, engine });
     } catch (err) {
-      logger.error({ err, sessionId: session.sessionId }, '[ai] Failed to execute AI turn');
+      logger.error('[ai] Failed to execute AI turn', {
+        sessionId: session.sessionId,
+        error: err?.message || err,
+        stack: err?.stack
+      });
     } finally {
       aiShotLocks.delete(session.sessionId);
     }
@@ -801,7 +1018,7 @@ async function getOrCreateEngine(session) {
   
   // Set AI difficulty if provided
   if (metadata?.gameType === 'with_ai' && difficulty) {
-    logger.info({ sessionId: session.sessionId, difficulty }, '[ai] Setting AI difficulty for engine');
+    logger.info('[ai] Setting AI difficulty for engine', { sessionId: session.sessionId, difficulty });
   }
   
   let needsInitialStateSave = false;
@@ -813,7 +1030,7 @@ async function getOrCreateEngine(session) {
         : session.gameState;
       engine.loadState(parsed?.engineSnapshot || parsed);
     } catch (error) {
-      logger.warn({ err: error, sessionId: session.sessionId }, 'Failed to parse gameState for engine');
+      logger.warn('Failed to parse gameState for engine', { err: error, sessionId: session.sessionId });
       needsInitialStateSave = true;
     }
   } else {
@@ -831,9 +1048,9 @@ async function getOrCreateEngine(session) {
         where: { sessionId: session.sessionId },
         data: { gameState: initialState }
       });
-      logger.info({ sessionId: session.sessionId }, 'Saved initial game state to database');
+      logger.info('Saved initial game state to database', { sessionId: session.sessionId });
     } catch (error) {
-      logger.warn({ err: error, sessionId: session.sessionId }, 'Failed to save initial game state');
+      logger.warn('Failed to save initial game state', { err: error, sessionId: session.sessionId });
     }
   }
   
@@ -845,17 +1062,17 @@ async function ensureAiAutoJoin({ io, session }) {
   const aiSide = getAiSide(session);
   
   if (!aiSide) {
-    logger.debug({ sessionId: session.sessionId }, '[ai] No AI side detected in ensureAiAutoJoin');
+    logAiDebug({ sessionId: session.sessionId }, '[ai] No AI side detected in ensureAiAutoJoin');
     return;
   }
 
   const isWithAi = metadata?.gameType === 'with_ai' || metadata?.gameType === 'ai';
   if (!isWithAi) {
-    logger.debug({ sessionId: session.sessionId, gameType: metadata?.gameType }, '[ai] Not a with_ai game type');
+    logAiDebug({ sessionId: session.sessionId, gameType: metadata?.gameType }, '[ai] Not a with_ai game type');
     return;
   }
 
-  logger.info({ sessionId: session.sessionId, aiSide }, '[ai] Auto-joining AI to session');
+  logger.info('[ai] Auto-joining AI to session', { sessionId: session.sessionId, aiSide });
 
   // Mark AI as connected and ready
   const aiReadyUpdate = aiSide === 'p1' 
@@ -879,13 +1096,13 @@ async function ensureAiAutoJoin({ io, session }) {
     aiPlayer: true
   });
 
-  logger.info({ sessionId: session.sessionId, aiSide }, '[ai] AI auto-joined successfully');
+  logger.info('[ai] AI auto-joined successfully', { sessionId: session.sessionId, aiSide });
 
   // If AI starts, schedule its first turn
   const rulesState = engine.state.rulesState || {};
   const turnKey = rulesState.turn || 'p1';
   if (turnKey === aiSide) {
-    logger.info({ sessionId: session.sessionId, aiSide }, '[ai] AI has first turn, scheduling');
+    logger.info('[ai] AI has first turn, scheduling', { sessionId: session.sessionId, aiSide });
     await scheduleAiTurn({ io, session, engine });
   }
 }
@@ -930,7 +1147,7 @@ exports.setupGameSocketHandlers = function(io) {
 
         logger.info(`Player authenticated: ${playerId} (${socket.id})`);
       } catch (error) {
-        logger.error({ err: error }, 'Authentication error');
+        logger.error('Authentication error', { err: error });
         socket.emit('auth_error', { error: 'Authentication failed' });
       }
     });
@@ -994,17 +1211,27 @@ exports.setupGameSocketHandlers = function(io) {
         if (aiSide === 'p2') {
           connectionData.player2Connected = true;
         }
+        if (DEBUG_AI) {
+          const metadata = parseSessionMetadata(session);
+          logger.info('[ai] Session metadata', {
+            sessionId,
+            aiSide,
+            aiPlayerId: metadata?.aiPlayerId || AI_PLAYER_ID,
+            gameType: metadata?.gameType,
+            aiDifficulty: getAiDifficulty(metadata)
+          });
+        }
 
         gameSessionConnections.set(sessionId, connectionData);
         if (typeof ack === 'function') {
           ack({ ok: true, sessionId });
         }
-        logger.info({
+        logger.info('Player joined game session', {
           sessionId,
           playerId: authenticatedPlayerId,
           socketId: socket.id,
           rooms: Array.from(socket.rooms)
-        }, 'Player joined game session');
+        });
 
         // Notify opponent
         const opponentId = isPlayer1 ? session.player2Id : session.player1Id;
@@ -1036,13 +1263,13 @@ exports.setupGameSocketHandlers = function(io) {
           yourTurn: gameState?.currentPlayer === authenticatedPlayerId
         });
         if (DEBUG_STATE) {
-          logger.info({
+          logger.info('[game-state] game:joined payload', {
             sessionId,
             playerId: authenticatedPlayerId,
             currentPlayer: gameState?.currentPlayer,
             turn: gameState?.turn,
             ballCount: gameState?.clientState?.balls?.length
-          }, '[game-state] game:joined payload');
+          });
         }
 
         if (aiSide) {
@@ -1081,7 +1308,7 @@ exports.setupGameSocketHandlers = function(io) {
 
         logger.info(`Player ${authenticatedPlayerId} joined game session ${sessionId}`);
       } catch (error) {
-        logger.error({ err: error }, 'Join game session error');
+        logger.error('Join game session error', { err: error });
         if (typeof ack === 'function') {
           ack({ ok: false, error: 'Failed to join game session' });
         }
@@ -1149,19 +1376,19 @@ exports.setupGameSocketHandlers = function(io) {
             gameState: parsedState
           });
           if (DEBUG_STATE) {
-            logger.info({
+            logger.info('[game-state] game:start payload', {
               sessionId: currentSessionId,
               currentPlayer: parsedState?.currentPlayer,
               turn: parsedState?.turn,
               ballCount: parsedState?.clientState?.balls?.length
-            }, '[game-state] game:start payload');
+            });
           }
 
           logger.info(`Game session ${currentSessionId} started`);
           await scheduleAiTurn({ io, session: updatedSession, engine });
         }
       } catch (error) {
-        logger.error({ err: error }, 'Player ready error');
+        logger.error('Player ready error', { err: error });
       }
     });
 
@@ -1201,17 +1428,49 @@ exports.setupGameSocketHandlers = function(io) {
         // Verify it's player's turn
         const engine = await getOrCreateEngine(session);
         const clientState = buildClientState(session, engine);
+        const actorSide = resolveActorSide(session, authenticatedPlayerId);
+        const aiSide = getAiSide(session);
+        const actorType = actorSide && aiSide === actorSide ? 'ai' : 'player';
         if (clientState.currentPlayer !== authenticatedPlayerId && action === 'shot') {
+          logger.warn('[game-action] Shot rejected: not your turn', {
+            sessionId: currentSessionId,
+            playerId: authenticatedPlayerId,
+            actorSide,
+            actorType,
+            currentPlayerId: clientState.currentPlayer,
+            currentTurn: clientState.turn
+          });
           return socket.emit('error', { message: 'Not your turn' });
         }
 
         if (action === 'shot') {
+          logger.info('[game-action] Shot received', {
+            sessionId: currentSessionId,
+            playerId: authenticatedPlayerId,
+            actorSide,
+            actorType,
+            currentTurn: clientState.turn,
+            currentPlayerId: clientState.currentPlayer,
+            shotSeq: data?.shotSeq ?? null,
+            trigger: data?.trigger ?? null,
+            power: roundNumber(data?.power),
+            direction: roundPoint(data?.direction),
+            cueBallPosition: roundPoint(data?.cueBallPosition)
+          });
           if (
             !data?.direction ||
             typeof data.direction.x !== 'number' ||
             typeof data.direction.y !== 'number' ||
             typeof data?.power !== 'number'
           ) {
+            logger.warn('[game-action] Shot rejected: invalid payload', {
+              sessionId: currentSessionId,
+              playerId: authenticatedPlayerId,
+              actorSide,
+              actorType,
+              hasDirection: !!data?.direction,
+              powerType: typeof data?.power
+            });
             return socket.emit('error', { message: 'Invalid shot payload' });
           }
           const direction = mapDirectionToServer(engine, data.direction);
@@ -1233,8 +1492,26 @@ exports.setupGameSocketHandlers = function(io) {
           });
 
           if (!applied.ok) {
+            logger.warn('[game-action] Shot rejected: apply failed', {
+              sessionId: currentSessionId,
+              playerId: authenticatedPlayerId,
+              actorSide,
+              actorType,
+              error: applied.error || 'Shot rejected'
+            });
             return socket.emit('error', { message: applied.error || 'Shot rejected' });
           }
+
+          logger.info('[game-action] Shot applied', {
+            sessionId: currentSessionId,
+            playerId: authenticatedPlayerId,
+            actorSide,
+            actorType,
+            nextTurn: applied.updatedState?.turn ?? null,
+            winner: applied.updatedState?.winner ?? null,
+            foul: applied.updatedState?.rulesState?.foul ?? null,
+            shotNumber: applied.updatedState?.rulesState?.shotNumber ?? null
+          });
 
           if (applied.updatedState?.winner) {
             await completeGameSession({
@@ -1247,6 +1524,13 @@ exports.setupGameSocketHandlers = function(io) {
             await scheduleAiTurn({ io, session, engine });
           }
         } else {
+          logger.info('[game-action] Action received', {
+            sessionId: currentSessionId,
+            playerId: authenticatedPlayerId,
+            actorSide,
+            actorType,
+            action
+          });
           socket.to(`game:${currentSessionId}`).emit('game:action', {
             playerId: authenticatedPlayerId,
             action,
@@ -1263,7 +1547,7 @@ exports.setupGameSocketHandlers = function(io) {
 
         logger.info(`Game action from ${authenticatedPlayerId} in session ${currentSessionId}: ${action}`);
       } catch (error) {
-        logger.error({ err: error }, 'Game action error');
+        logger.error('Game action error', { err: error });
         socket.emit('error', { message: 'Failed to process action' });
       }
     });
@@ -1306,7 +1590,7 @@ exports.setupGameSocketHandlers = function(io) {
           metadata
         });
       } catch (error) {
-        logger.error({ err: error }, 'Game complete error');
+        logger.error('Game complete error', { err: error });
         socket.emit('error', { message: 'Failed to complete game' });
       }
     });
@@ -1344,7 +1628,7 @@ exports.setupGameSocketHandlers = function(io) {
 
         logger.info(`Voice signaling: ${authenticatedPlayerId} -> ${to} in session ${currentSessionId}`);
       } catch (error) {
-        logger.error({ err: error }, 'Voice signaling error');
+        logger.error('Voice signaling error', { err: error });
         socket.emit('error', { message: 'Voice signaling failed' });
       }
     });
@@ -1395,7 +1679,7 @@ exports.setupGameSocketHandlers = function(io) {
             }
           }
         } catch (error) {
-          logger.error({ err: error }, 'Disconnect cleanup error');
+          logger.error('Disconnect cleanup error', { err: error });
         }
       }
     });
@@ -1443,7 +1727,7 @@ function startTimeoutChecker(io) {
         }
       }
     } catch (error) {
-      logger.error({ err: error }, 'Error in timeout checker');
+      logger.error('Error in timeout checker', { err: error });
     }
   }, 30000); // Check every 30 seconds
 }

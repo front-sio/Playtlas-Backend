@@ -20,7 +20,7 @@ function logProcessingResult(topic, startTime, err) {
 }
 
 async function handlePlayerRegistered(payload) {
-  const { userId, username, agentUserId } = payload || {};
+  const { userId, username, agentUserId, clubId } = payload || {};
 
   if (!userId || !username) {
     logger.warn(
@@ -35,6 +35,7 @@ async function handlePlayerRegistered(payload) {
       userId,
       username,
       agentUserId,
+      clubId,
       activityAt: new Date()
     });
 

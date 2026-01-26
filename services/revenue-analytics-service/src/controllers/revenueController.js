@@ -1,6 +1,13 @@
 const revenueAggregationService = require('../services/revenueAggregationService');
 const { prisma } = require('../config/db');
 const logger = require('../utils/logger');
+const axios = require('axios');
+
+const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3007';
+const AI_PLAYER_ID = process.env.AI_PLAYER_ID || null;
+const AI_WALLET_OWNER_ID = process.env.AI_WALLET_OWNER_ID || AI_PLAYER_ID;
+const AI_WALLET_TYPE = process.env.AI_WALLET_TYPE || 'ai';
+const SERVICE_JWT_TOKEN = process.env.SERVICE_JWT_TOKEN || null;
 
 const ADMIN_ROLES = new Set([
   'admin',
@@ -19,6 +26,46 @@ const ensureAdmin = (req, res) => {
     return false;
   }
   return true;
+};
+
+const getServiceHeaders = (req) => {
+  if (req?.headers?.authorization) {
+    return { Authorization: req.headers.authorization };
+  }
+  if (SERVICE_JWT_TOKEN) {
+    return { Authorization: `Bearer ${SERVICE_JWT_TOKEN}` };
+  }
+  return {};
+};
+
+const fetchAiWallet = async (headers) => {
+  if (!AI_WALLET_OWNER_ID) return null;
+
+  try {
+    const response = await axios.get(
+      `${WALLET_SERVICE_URL}/owner/${encodeURIComponent(AI_WALLET_OWNER_ID)}?type=${encodeURIComponent(AI_WALLET_TYPE)}`,
+      { headers }
+    );
+    return response.data?.data || response.data;
+  } catch (error) {
+    if (error.response?.status !== 404) {
+      throw error;
+    }
+  }
+
+  try {
+    const response = await axios.get(
+      `${WALLET_SERVICE_URL}/owner/${encodeURIComponent(AI_WALLET_OWNER_ID)}?type=player`,
+      { headers }
+    );
+    return response.data?.data || response.data;
+  } catch (error) {
+    if (error.response?.status !== 404) {
+      throw error;
+    }
+  }
+
+  return null;
 };
 
 /**
@@ -269,6 +316,31 @@ exports.getDashboardStats = async (req, res) => {
       })
     ]);
 
+    const headers = getServiceHeaders(req);
+    const [platformWalletRes, systemWalletRes, aiWallet, agentWalletsRes] = await Promise.all([
+      axios.get(`${WALLET_SERVICE_URL}/platform/wallet`, { headers }).catch(() => ({ data: {} })),
+      axios.get(`${WALLET_SERVICE_URL}/system/wallet`, { headers }).catch(() => ({ data: {} })),
+      fetchAiWallet(headers).catch(() => null),
+      axios
+        .get(`${WALLET_SERVICE_URL}/admin/wallets`, {
+          headers,
+          params: { type: 'agent', limit: 1000, offset: 0 }
+        })
+        .catch(() => ({ data: {} }))
+    ]);
+
+    const platformWalletData = platformWalletRes.data?.data || platformWalletRes.data || {};
+    const systemWalletData = systemWalletRes.data?.data || systemWalletRes.data || {};
+    const aiWalletData = aiWallet || {};
+    const agentWallets = agentWalletsRes.data?.data || agentWalletsRes.data || [];
+
+    const platformWalletBalance = Number(platformWalletData.balance || 0);
+    const systemWalletBalance = Number(systemWalletData.balance || 0);
+    const aiWalletBalance = Number(aiWalletData.balance || 0);
+    const agentRevenue = Array.isArray(agentWallets)
+      ? agentWallets.reduce((sum, wallet) => sum + Number(wallet.balance || 0), 0)
+      : 0;
+
     res.json({
       success: true,
       data: {
@@ -302,6 +374,12 @@ exports.getDashboardStats = async (req, res) => {
           lifetimeValue: p.lifetimeValue,
           netProfit: p.netProfit
         })),
+        realtime: {
+          platformWalletBalance,
+          systemWalletBalance,
+          aiWalletBalance,
+          agentRevenue
+        },
         timestamp: new Date().toISOString()
       }
     });

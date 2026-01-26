@@ -2,13 +2,42 @@ const { ensurePlayerProfile } = require('../services/playerProfileService');
 const logger = require('../utils/logger');
 const { prisma } = require('../config/db');
 const { Prisma } = require('@prisma/client');
+const TOURNAMENT_SERVICE_URL = process.env.TOURNAMENT_SERVICE_URL || 'http://tournament-service:3000';
 
 // const { authenticate, authorize } = require('./authMiddleware'); // Commented out - middleware doesn't exist yet
+
+async function fetchClubTournaments(clubId) {
+  if (!clubId) return [];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7000);
+
+  try {
+    const response = await fetch(
+      `${TOURNAMENT_SERVICE_URL}/tournament?clubId=${encodeURIComponent(clubId)}`,
+      { signal: controller.signal }
+    );
+    if (!response.ok) {
+      logger.warn('[playerController] Tournament service responded with non-200');
+      return [];
+    }
+    const payload = await response.json();
+    return Array.isArray(payload?.data) ? payload.data : [];
+  } catch (error) {
+    const isAbort = error?.name === 'AbortError';
+    logger.warn('[playerController] Failed to fetch club tournaments', {
+      clubId,
+      message: isAbort ? 'timeout' : error?.message
+    });
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 exports.createOrUpdatePlayer = async (req, res) => {
   const isDev = (process.env.NODE_ENV || 'development') !== 'production';
   try {
-    const { playerId, userId, username, agentUserId } = req.body;
+    const { playerId, userId, username, agentUserId, clubId } = req.body;
     const effectivePlayerId = playerId || userId;
 
     if (!effectivePlayerId || !username) {
@@ -23,6 +52,7 @@ exports.createOrUpdatePlayer = async (req, res) => {
       userId: effectivePlayerId,
       username,
       agentUserId,
+      clubId,
       activityAt: new Date()
     });
 
@@ -86,12 +116,20 @@ exports.getPlayerStats = async (req, res) => {
       achievements = [];
     }
 
+    let clubTournaments = [];
+    try {
+      clubTournaments = await fetchClubTournaments(player.clubId);
+    } catch (e) {
+      clubTournaments = [];
+    }
+
     res.json({
       success: true,
       data: {
         ...player,
         recentMatches,
         achievements,
+        clubTournaments
       },
     });
   } catch (error) {
@@ -110,6 +148,71 @@ exports.getPlayerStats = async (req, res) => {
       details: isDev ? error?.message : undefined,
       code: isDev ? code : undefined,
     });
+  }
+};
+
+exports.getAgentAnalytics = async (req, res) => {
+  try {
+    const { agentUserId } = req.params;
+    const { clubId, startDate, endDate } = req.query;
+
+    if (!agentUserId) {
+      return res.status(400).json({ success: false, error: 'agentUserId is required' });
+    }
+
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    const where = { agentUserId };
+    if (clubId) where.clubId = clubId;
+
+    const players = await prisma.playerStat.findMany({
+      where,
+      select: { playerId: true, createdAt: true }
+    });
+
+    const playerIds = players.map((p) => p.playerId);
+    if (playerIds.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          agentUserId,
+          clubId: clubId || null,
+          period: { startDate: start, endDate: end },
+          registeredPlayers: 0,
+          participatingPlayers: 0,
+          matchesPlayed: 0
+        }
+      });
+    }
+
+    const matches = await prisma.matchHistory.findMany({
+      where: {
+        playerId: { in: playerIds },
+        playedAt: { gte: start, lte: end }
+      },
+      select: { playerId: true }
+    });
+
+    const participatingPlayers = new Set(matches.map((m) => m.playerId)).size;
+
+    res.json({
+      success: true,
+      data: {
+        agentUserId,
+        clubId: clubId || null,
+        period: { startDate: start, endDate: end },
+        registeredPlayers: playerIds.length,
+        participatingPlayers,
+        matchesPlayed: matches.length
+      }
+    });
+  } catch (error) {
+    logger.error('[playerController] Agent analytics error:', {
+      message: error?.message,
+      stack: error?.stack
+    });
+    res.status(500).json({ success: false, error: 'Failed to fetch agent analytics' });
   }
 };
 

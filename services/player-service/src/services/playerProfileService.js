@@ -11,7 +11,7 @@ const logger = require('../utils/logger');
  * @param {Date}  [options.activityAt] - Last activity timestamp.
  * @returns {Promise<{ player: any, created: boolean }>}
  */
-async function ensurePlayerProfile({ userId, username, agentUserId, activityAt }) {
+async function ensurePlayerProfile({ userId, username, agentUserId, activityAt, clubId }) {
   if (!userId) {
     throw new Error('userId is required to ensure player profile');
   }
@@ -28,6 +28,9 @@ async function ensurePlayerProfile({ userId, username, agentUserId, activityAt }
   const updateData = {};
   if (agentUserId) {
     updateData.agentUserId = agentUserId;
+  }
+  if (clubId) {
+    updateData.clubId = clubId;
   }
   if (username && (!existing || existing.username !== username)) {
     updateData.username = username;
@@ -53,6 +56,7 @@ async function ensurePlayerProfile({ userId, username, agentUserId, activityAt }
       userId,
       username,
       agentUserId: agentUserId || null,
+      clubId: clubId || null,
       lastActivityAt: activityAt || new Date()
     }
   });

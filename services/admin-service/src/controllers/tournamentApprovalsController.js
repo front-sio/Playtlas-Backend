@@ -173,8 +173,8 @@ exports.requestTournamentAction = async (req, res) => {
       return res.status(400).json({ success: false, error: 'tournamentId and action are required' });
     }
 
-    if (!['START', 'STOP', 'CANCEL'].includes(action)) {
-      return res.status(400).json({ success: false, error: 'action must be START, STOP, or CANCEL' });
+    if (!['START', 'STOP', 'RESUME', 'CANCEL'].includes(action)) {
+      return res.status(400).json({ success: false, error: 'action must be START, STOP, RESUME, or CANCEL' });
     }
 
     const approval = await createApprovalRequest({

@@ -39,15 +39,26 @@ const hashData = (data) => {
 };
 
 const verifyWebhookSignature = (payload, signature, secret) => {
+  if (!signature) return false;
+  const resolvedSecret = secret || process.env.WEBHOOK_SECRET;
+  if (!resolvedSecret) return false;
+
+  const message =
+    typeof payload === 'string'
+      ? payload
+      : Buffer.isBuffer(payload)
+        ? payload
+        : JSON.stringify(payload);
+
   const expectedSignature = crypto
-    .createHmac('sha256', secret || process.env.WEBHOOK_SECRET)
-    .update(JSON.stringify(payload))
+    .createHmac('sha256', resolvedSecret)
+    .update(message)
     .digest('hex');
-  
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expectedSignature)
-  );
+
+  const provided = Buffer.from(signature);
+  const expected = Buffer.from(expectedSignature);
+  if (provided.length !== expected.length) return false;
+  return crypto.timingSafeEqual(provided, expected);
 };
 
 const generateReference = (prefix = 'PAY') => {

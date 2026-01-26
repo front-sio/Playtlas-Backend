@@ -6,10 +6,6 @@ const { ensureTournamentSchedule, startSchedulerWorker, scheduleTournamentStart,
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
 
 function normalizeGameType(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'with_ai' || normalized === 'withai' || normalized === 'ai') {
-    return 'with_ai';
-  }
   return 'multiplayer';
 }
 function buildTournamentMetadata(existing, actor) {
@@ -79,23 +75,20 @@ async function publishCommandResult(commandId, action, status, data, error) {
 }
 
 async function handleCreate(commandId, data, actor) {
-  const { name, description, entryFee, maxPlayers, matchDuration, seasonDuration, startTime, gameType, aiDifficulty } = data;
+  const { name, description, entryFee, maxPlayers, matchDuration, seasonDuration, startTime, gameType } = data;
   if (!name || entryFee === undefined) {
     throw new Error('name and entryFee are required');
   }
 
   const parsedStartTime = startTime ? new Date(startTime) : new Date(Date.now() + 3600000);
   const normalizedGameType = normalizeGameType(gameType);
-  const effectiveMaxPlayers = normalizedGameType === 'with_ai' ? 2 : maxPlayers;
-  const rawAiDifficulty = aiDifficulty ? Number(aiDifficulty) : null;
-  const normalizedAiDifficulty = rawAiDifficulty ? Math.max(1, Math.min(100, rawAiDifficulty)) : null;
 
   const tournament = await prisma.tournament.create({
     data: {
       name,
       description: description || null,
       entryFee,
-      maxPlayers: effectiveMaxPlayers || undefined,
+      maxPlayers: maxPlayers || undefined,
       matchDuration: matchDuration || seasonDuration || DEFAULT_MATCH_DURATION_SECONDS,
       competitionWalletId: null,
       startTime: parsedStartTime,
@@ -103,8 +96,7 @@ async function handleCreate(commandId, data, actor) {
       stage: 'registration',
       metadata: {
         ...buildTournamentMetadata(undefined, actor),
-        gameType: normalizedGameType,
-        aiDifficulty: normalizedAiDifficulty
+        gameType: normalizedGameType
       }
     }
   });
@@ -136,10 +128,10 @@ async function handleStart(commandId, data, actor) {
       updatedAt: new Date(),
       metadata: actor
         ? {
-            ...buildTournamentMetadata(existing?.metadata, null),
-            lastStartedBy: actor.userId,
-            lastStartedRole: actor.role
-          }
+          ...buildTournamentMetadata(existing?.metadata, null),
+          lastStartedBy: actor.userId,
+          lastStartedRole: actor.role
+        }
         : buildTournamentMetadata(existing?.metadata, null)
     }
   });
@@ -163,14 +155,20 @@ async function handleStop(commandId, data) {
 
   const existing = await prisma.tournament.findUnique({
     where: { tournamentId },
-    select: { metadata: true }
+    select: { metadata: true, status: true }
   });
+  if (!existing) {
+    throw new Error('Tournament not found');
+  }
+  if (existing.status === 'stopped') {
+    return prisma.tournament.findUnique({ where: { tournamentId } });
+  }
 
   const tournament = await prisma.tournament.update({
     where: { tournamentId },
     data: {
       status: 'stopped',
-      endTime: new Date(),
+      updatedAt: new Date(),
       metadata: {
         ...(existing?.metadata || {}),
         stopReason: reason || null
@@ -178,7 +176,7 @@ async function handleStop(commandId, data) {
     }
   });
 
-  await cancelTournamentSchedule(tournamentId);
+  await cancelTournamentSchedule(tournamentId, { cancelSeasons: false });
 
   await publishEvent(
     Topics.TOURNAMENT_STOPPED,
@@ -186,6 +184,49 @@ async function handleStop(commandId, data) {
     commandId
   );
   return tournament;
+}
+
+async function handleResume(commandId, data, actor) {
+  const { tournamentId } = data || {};
+  if (!tournamentId) throw new Error('tournamentId is required');
+
+  const existing = await prisma.tournament.findUnique({
+    where: { tournamentId },
+    select: { metadata: true, status: true, startTime: true }
+  });
+  if (!existing) {
+    throw new Error('Tournament not found');
+  }
+  if (existing.status === 'active') {
+    return prisma.tournament.findUnique({ where: { tournamentId } });
+  }
+
+  const updated = await prisma.tournament.update({
+    where: { tournamentId },
+    data: {
+      status: 'active',
+      startTime: existing.startTime || new Date(),
+      updatedAt: new Date(),
+      metadata: actor
+        ? {
+          ...(existing?.metadata || {}),
+          lastResumedBy: actor.userId,
+          lastResumedRole: actor.role
+        }
+        : { ...(existing?.metadata || {}) }
+    }
+  });
+
+  await publishEvent(
+    Topics.TOURNAMENT_RESUMED,
+    buildTournamentSnapshot(updated, { commandId }),
+    commandId
+  );
+
+  await startSchedulerWorker();
+  await ensureTournamentSchedule(tournamentId);
+
+  return updated;
 }
 
 async function handleCancel(commandId, data) {
@@ -227,6 +268,24 @@ async function handleUpdate(commandId, data, actor) {
   delete sanitized.createdAt;
   delete sanitized.tournamentId;
   delete sanitized.competitionWalletId;
+
+  if (sanitized.maxPlayers !== undefined) {
+    const parsedMaxPlayers = Number(sanitized.maxPlayers);
+    if (!Number.isFinite(parsedMaxPlayers) || parsedMaxPlayers < 2) {
+      throw new Error('maxPlayers must be a number >= 2');
+    }
+    const current = await prisma.tournament.findUnique({
+      where: { tournamentId },
+      select: { currentPlayers: true }
+    });
+    if (!current) {
+      throw new Error('Tournament not found');
+    }
+    if (parsedMaxPlayers < current.currentPlayers) {
+      throw new Error('maxPlayers cannot be below current players');
+    }
+    sanitized.maxPlayers = Math.floor(parsedMaxPlayers);
+  }
 
   const updated = await prisma.tournament.update({
     where: { tournamentId },
@@ -374,7 +433,7 @@ async function startTournamentCommandConsumer() {
   // Scheduler worker should be ready (safe to call multiple times).
   await startSchedulerWorker();
 
-  await subscribeEvents('tournament-service', [Topics.TOURNAMENT_COMMAND], async (topic, payload) => {
+  await subscribeEvents('tournament-service-command', [Topics.TOURNAMENT_COMMAND], async (topic, payload) => {
     if (topic !== Topics.TOURNAMENT_COMMAND) return;
 
     const { commandId, action, data, actor } = payload || {};
@@ -396,6 +455,8 @@ async function startTournamentCommandConsumer() {
         tournament = await handleStart(commandId, data, actor);
       } else if (action === 'STOP') {
         tournament = await handleStop(commandId, data);
+      } else if (action === 'RESUME') {
+        tournament = await handleResume(commandId, data, actor);
       } else if (action === 'CANCEL') {
         tournament = await handleCancel(commandId, data);
       } else if (action === 'UPDATE') {

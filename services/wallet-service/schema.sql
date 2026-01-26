@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS wallets (
   owner_id UUID NOT NULL,
   type TEXT NOT NULL,
   balance NUMERIC(15, 2) NOT NULL DEFAULT 0,
+  revenue_balance NUMERIC(15, 2) NOT NULL DEFAULT 0,
   currency TEXT NOT NULL DEFAULT 'TZS',
   is_active BOOLEAN NOT NULL DEFAULT true,
   metadata JSONB,

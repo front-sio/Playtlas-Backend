@@ -15,15 +15,24 @@ if (NODE_ENV === 'production') {
   app.set('trust proxy', 1);
 }
 
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+const parseOrigins = (value) => (value || '')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
+const allowedOrigins = parseOrigins(process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '');
+const DEFAULT_DEV_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+const getDefaultOrigins = () => (NODE_ENV === 'production' ? [] : DEFAULT_DEV_ORIGINS);
+const resolveCorsOrigin = (origin, callback) => {
+  const targetOrigins = allowedOrigins.length > 0 ? allowedOrigins : getDefaultOrigins();
+  if (!origin) return callback(null, true);
+  if (targetOrigins.includes('*') || targetOrigins.includes(origin)) return callback(null, true);
+  return callback(new Error('Not allowed by CORS'));
+};
 
 app.use(helmet());
 app.use(
   cors({
-    origin: allowedOrigins.length > 0 ? allowedOrigins : '*',
+    origin: resolveCorsOrigin,
     credentials: true
   })
 );

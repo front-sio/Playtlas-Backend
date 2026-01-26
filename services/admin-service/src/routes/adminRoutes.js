@@ -105,6 +105,7 @@ router.post('/agents',
     body('firstName').notEmpty().withMessage('First name is required'),
     body('lastName').notEmpty().withMessage('Last name is required'),
     body('gender').isIn(['male', 'female']).withMessage('Gender must be either male or female'),
+    body('clubId').isUUID().withMessage('Valid clubId is required'),
     handleValidationErrors
   ],
   adminController.createAgent
@@ -140,7 +141,96 @@ router.post('/reports/financial',
   adminController.generateFinancialReport
 );
 
+// Admin payments (agent earnings + payouts)
+router.get('/payments/clubs/:clubId/revenue',
+  authorize('reports:financial'),
+  [
+    param('clubId').isUUID(),
+    handleValidationErrors
+  ],
+  adminController.getClubRevenue
+);
+
+router.get('/payments/clubs/:clubId/earnings',
+  authorize('reports:financial'),
+  [
+    param('clubId').isUUID(),
+    handleValidationErrors
+  ],
+  adminController.getClubEarnings
+);
+
+router.post('/payments/clubs/:clubId/earnings/compute',
+  authorize('reports:financial'),
+  [
+    param('clubId').isUUID(),
+    body('date').isISO8601().withMessage('Valid date is required'),
+    handleValidationErrors
+  ],
+  adminController.computeClubEarnings
+);
+
+router.post('/payments/clubs/:clubId/earnings/finalize',
+  authorize('reports:financial'),
+  [
+    param('clubId').isUUID(),
+    body('date').isISO8601().withMessage('Valid date is required'),
+    handleValidationErrors
+  ],
+  adminController.finalizeClubEarnings
+);
+
+router.get('/payments/clubs/:clubId/payouts',
+  authorize('reports:financial'),
+  [
+    param('clubId').isUUID(),
+    handleValidationErrors
+  ],
+  adminController.getClubPayouts
+);
+
 // Tournament Management
+router.post('/clubs',
+  authorize('tournaments:update'),
+  [
+    body('name').notEmpty().withMessage('Name is required'),
+    handleValidationErrors
+  ],
+  adminController.createClub
+);
+
+router.get('/clubs',
+  authorize('tournaments:read'),
+  adminController.getClubs
+);
+
+router.get('/clubs/:clubId',
+  authorize('tournaments:read'),
+  [
+    param('clubId').isUUID(),
+    handleValidationErrors
+  ],
+  adminController.getClub
+);
+
+router.put('/clubs/:clubId',
+  authorize('tournaments:update'),
+  [
+    param('clubId').isUUID(),
+    handleValidationErrors
+  ],
+  adminController.updateClub
+);
+
+router.delete('/clubs/:clubId',
+  authorize('tournaments:update'),
+  [
+    param('clubId').isUUID(),
+    handleValidationErrors
+  ],
+  adminController.deleteClub
+);
+
 router.get('/tournaments/stats',
   authorize('tournaments:read'),
   adminController.getTournamentStats
@@ -334,6 +424,29 @@ router.post('/tournaments/:tournamentId/start',
     handleValidationErrors
   ],
   adminController.startTournament
+);
+
+router.post('/tournaments/:tournamentId/stop',
+  authorize('tournaments:update'),
+  [
+    param('tournamentId').isUUID(),
+    handleValidationErrors
+  ],
+  adminController.stopTournament
+);
+
+router.post('/tournaments/:tournamentId/resume',
+  authorize('tournaments:update'),
+  [
+    param('tournamentId').isUUID(),
+    handleValidationErrors
+  ],
+  adminController.resumeTournament
+);
+
+router.post('/tournaments/seasons/repair',
+  authorize('tournaments:update'),
+  adminController.repairSeasonFixtures
 );
 
 module.exports = router;

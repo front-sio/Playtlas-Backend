@@ -12,8 +12,7 @@ const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 30)
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 4);
 const SEASON_SCHEDULE_EVERY_MS = Number(process.env.SEASON_SCHEDULE_EVERY_MS || 5 * 60 * 1000);
 const DEFAULT_MATCH_DURATION_SECONDS = Number(process.env.DEFAULT_MATCH_DURATION_SECONDS || 300);
-const WITH_AI_SEASON_BUFFER = Number(process.env.WITH_AI_SEASON_BUFFER || 10);
-const WITH_AI_INTERVAL_MINUTES = Number(process.env.WITH_AI_SEASON_INTERVAL_MINUTES || 1);
+// AI constants removed
 const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://localhost:3002';
 const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003';
 const SERVICE_JWT_TOKEN = process.env.SERVICE_JWT_TOKEN || process.env.PAYMENT_SERVICE_TOKEN || null;
@@ -80,10 +79,18 @@ function normalizeGameType(value) {
 }
 
 async function createSeasonAndSchedule({ tournament, seasonNumber, startTime, matchDurationSeconds }) {
+  if (!tournament?.clubId) {
+    logger.error(
+      { tournamentId: tournament?.tournamentId },
+      '[scheduler] Missing clubId for tournament; cannot create season'
+    );
+    return null;
+  }
   const { fixtureTime, joiningCloseAt, endTime } = computeTimes(startTime, matchDurationSeconds);
   const season = await prisma.season.create({
     data: {
-      tournamentId: tournament.tournamentId,
+      tournament: { connect: { tournamentId: tournament.tournamentId } },
+      club: { connect: { clubId: tournament.clubId } },
       seasonNumber,
       name: formatSeasonName(tournament.name, fixtureTime),
       status: 'upcoming',
@@ -213,6 +220,8 @@ async function ensureAiParticipant({ tournament, season }) {
 
   const entryFee = Number(tournament.entryFee || 0);
   if (entryFee > 0) {
+    const normalizedGameType = normalizeGameType(tournament?.metadata?.gameType);
+    const platformFeePercent = normalizedGameType === 'with_ai' ? 0.10 : 0.30;
     const serviceToken = getServiceToken();
     if (!serviceToken) {
       logger.error({ seasonId: season.seasonId }, '[scheduler] SERVICE_JWT_TOKEN missing; cannot pay AI entry fee via payment-service');
@@ -226,7 +235,8 @@ async function ensureAiParticipant({ tournament, season }) {
           amount: entryFee,
           tournamentId: tournament.tournamentId,
           seasonId: season.seasonId,
-          userId: AI_PLAYER_ID
+          userId: AI_PLAYER_ID,
+          platformFeePercent
         },
         {
           timeout: 10000,
@@ -267,6 +277,7 @@ async function ensureNextSeason(tournamentId) {
     where: { tournamentId },
     select: {
       tournamentId: true,
+      clubId: true,
       status: true,
       matchDuration: true,
       stage: true,
@@ -364,7 +375,7 @@ async function closeSeasonJoining(seasonId) {
     where: { tournamentId: season.tournamentId },
     select: { status: true, metadata: true, entryFee: true, tournamentId: true, name: true }
   });
-  if (!tournament || tournament.status !== 'active') {
+  if (!tournament || !['active', 'stopped'].includes(tournament.status)) {
     return;
   }
 
@@ -400,14 +411,14 @@ async function triggerSeasonFixtures(seasonId) {
   const season = await prisma.season.findUnique({
     where: { seasonId },
     include: {
-      tournament: { select: { tournamentId: true, status: true, stage: true, matchDuration: true, metadata: true } },
+      tournament: { select: { tournamentId: true, clubId: true, status: true, stage: true, matchDuration: true, metadata: true, entryFee: true } },
       tournamentPlayers: { select: { playerId: true, status: true } }
     }
   });
   if (!season) return;
   if (season.matchesGenerated) return;
   if (season.status !== 'upcoming') return;
-  if (!season.tournament || season.tournament.status !== 'active') return;
+  if (!season.tournament || !['active', 'stopped'].includes(season.tournament.status)) return;
 
   await ensureAiParticipant({ tournament: season.tournament, season }).catch((err) => {
     logger.error({ err, seasonId: season.seasonId }, '[scheduler] Failed to register AI before fixtures');
@@ -430,8 +441,6 @@ async function triggerSeasonFixtures(seasonId) {
   const seasonStartTime = season.startTime ? season.startTime.toISOString() : undefined;
 
   const gameType = normalizeGameType(season.tournament?.metadata?.gameType);
-  const aiDifficulty = season.tournament?.metadata?.aiDifficulty ?? null;
-  const aiPlayerId = gameType === 'with_ai' ? (AI_PLAYER_ID || null) : null;
 
   if (activePlayers.length < 2) {
     const now = new Date();
@@ -458,10 +467,14 @@ async function triggerSeasonFixtures(seasonId) {
         stage: tournamentStage,
         players: activePlayers,
         matchDurationSeconds,
+        entryFee: Number(season.tournament.entryFee || 0),
         startTime: seasonStartTime,
         gameType,
         aiDifficulty,
-        aiPlayerId
+        aiRating,
+        level,
+        aiPlayerId,
+        clubId: season.clubId || season.tournament?.clubId || null
       },
       season.seasonId
     ).catch((err) => {
@@ -470,32 +483,46 @@ async function triggerSeasonFixtures(seasonId) {
     return;
   }
 
-  // Activate season at fixture time.
+  // Mark season as pending while fixtures are generated.
   await prisma.season.update({
     where: { seasonId },
-    data: { status: 'active', matchesGenerated: true }
+    data: { status: 'pending', matchesGenerated: false, errorReason: null }
   });
 
-  await publishEvent(
-    Topics.GENERATE_MATCHES,
-    {
-      tournamentId: season.tournament.tournamentId,
-      seasonId: season.seasonId,
-      stage: tournamentStage,
-      players: activePlayers,
-      matchDurationSeconds,
-      startTime: seasonStartTime,
-      gameType,
-      aiDifficulty,
-      aiPlayerId
-    },
-    season.seasonId
-  );
+  try {
+    await publishEvent(
+      Topics.GENERATE_MATCHES,
+      {
+        tournamentId: season.tournament.tournamentId,
+        seasonId: season.seasonId,
+        stage: tournamentStage,
+        players: activePlayers,
+        matchDurationSeconds,
+        entryFee: Number(season.tournament.entryFee || 0),
+        startTime: seasonStartTime,
+        gameType,
+        clubId: season.clubId || season.tournament?.clubId || null
+      },
+      season.seasonId
+    );
 
-  logger.info(
-    { seasonId, playerCount: activePlayers.length },
-    '[scheduler] Published GENERATE_MATCHES and activated season'
-  );
+    logger.info(
+      { seasonId, playerCount: activePlayers.length },
+      '[scheduler] Published GENERATE_MATCHES (season pending activation)'
+    );
+  } catch (eventErr) {
+    logger.error(
+      { err: eventErr, seasonId },
+      '[scheduler] Failed to publish GENERATE_MATCHES'
+    );
+    await prisma.season.update({
+      where: { seasonId },
+      data: {
+        status: 'error',
+        errorReason: eventErr?.message || 'Failed to publish GENERATE_MATCHES'
+      }
+    });
+  }
 }
 
 async function ensureTournamentSchedule(tournamentId) {
@@ -552,7 +579,7 @@ async function ensureActiveTournamentSchedules() {
   }
 }
 
-async function cancelTournamentSchedule(tournamentId) {
+async function cancelTournamentSchedule(tournamentId, { cancelSeasons = true } = {}) {
   const q = getQueue();
 
   const removeJobSafe = async (jobId) => {
@@ -578,18 +605,20 @@ async function cancelTournamentSchedule(tournamentId) {
     logger.warn({ err, tournamentId }, '[scheduler] Failed to remove repeatable jobs');
   }
 
-  const seasons = await prisma.season.findMany({
-    where: {
-      tournamentId,
-      status: { in: ['upcoming', 'active'] }
-    },
-    select: { seasonId: true }
-  });
+  if (cancelSeasons) {
+    const seasons = await prisma.season.findMany({
+      where: {
+        tournamentId,
+        status: { in: ['upcoming', 'active'] }
+      },
+      select: { seasonId: true }
+    });
 
-  for (const season of seasons) {
-    await removeJobSafe(`season:${season.seasonId}:close-joining`);
-    await removeJobSafe(`season:${season.seasonId}:trigger-fixtures`);
-  await removeJobSafe(`season:${season.seasonId}:complete`);
+    for (const season of seasons) {
+      await removeJobSafe(`season:${season.seasonId}:close-joining`);
+      await removeJobSafe(`season:${season.seasonId}:trigger-fixtures`);
+      await removeJobSafe(`season:${season.seasonId}:complete`);
+    }
   }
 
   logger.info({ tournamentId }, '[scheduler] Tournament schedule cancelled');

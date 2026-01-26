@@ -170,7 +170,38 @@ const setupSocketIO = (io) => {
     socket.on('player:tournaments:request', async () => {
       try {
         const target = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3004';
-        const response = await fetch(`${target}/tournament?limit=50&offset=0`, {
+        let requestUrl = `${target}/tournament?limit=50&offset=0`;
+
+        if ((socket.userRole || '').toLowerCase() === 'player') {
+          let clubId = socket.playerClubId || null;
+          if (!clubId) {
+            const playerTarget = process.env.PLAYER_SERVICE_URL || 'http://localhost:3002';
+            const profileResponse = await fetch(`${playerTarget}/api/players/${socket.userId}/stats`, {
+              headers: {
+                Authorization: `Bearer ${socket.authToken}`
+              }
+            });
+
+            if (!profileResponse.ok) {
+              const message = `Failed to fetch player profile (${profileResponse.status})`;
+              socket.emit('player:tournaments:error', { message });
+              return;
+            }
+
+            const profilePayload = await profileResponse.json();
+            clubId = profilePayload?.data?.clubId || null;
+            socket.playerClubId = clubId || null;
+          }
+
+          if (!clubId) {
+            socket.emit('player:tournaments:update', []);
+            return;
+          }
+
+          requestUrl = `${requestUrl}&clubId=${encodeURIComponent(clubId)}`;
+        }
+
+        const response = await fetch(requestUrl, {
           headers: {
             Authorization: `Bearer ${socket.authToken}`
           }

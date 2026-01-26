@@ -2,7 +2,9 @@ const { prisma } = require('../config/db.js');
 const { logger } = require('../utils/logger.js');
 const { getProvider } = require('../providers/index.js');
 const { generateReference, sanitizePhoneNumber, maskPhoneNumber } = require('../utils/security.js');
+const TidParser = require('../utils/tidParser.js');
 const fraudDetectionService = require('./fraudDetection.js');
+const MobileMoneyMessageService = require('./mobileMoneyMessageService.js');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const socketEmitter = require('../utils/socketEmitter.js');
@@ -609,7 +611,7 @@ class PaymentProcessingService {
     }
   }
 
-  async initiateWithdrawal({ userId, walletId, methodId, amount, metadata = {}, role }) {
+  async initiateWithdrawal({ userId, walletId, methodId, amount, metadata = {}, role, withdrawalSource }) {
     try {
       logger.info('Initiating withdrawal:', { userId, walletId, methodId, amount, role });
       
@@ -653,10 +655,18 @@ class PaymentProcessingService {
       const fee = this.calculateWithdrawalFee(amount);
       const totalDeducted = parseFloat(amount) + parseFloat(fee);
 
+      const normalizedSource = String(withdrawalSource || metadata.withdrawalSource || 'deposit').toLowerCase();
+
       // Check wallet balance using the provided walletId
-      const walletBalance = await this.getWalletBalance(walletId);
-      if (walletBalance < totalDeducted) {
-        throw new Error(`Insufficient wallet balance. Required: ${totalDeducted}, Available: ${walletBalance}`);
+      const balances = await this.getWalletBalances(walletId);
+      if (balances.balance < totalDeducted) {
+        throw new Error(`Insufficient wallet balance. Required: ${totalDeducted}, Available: ${balances.balance}`);
+      }
+      if (normalizedSource === 'revenue' && balances.revenueBalance < totalDeducted) {
+        throw new Error(`Insufficient revenue balance. Required: ${totalDeducted}, Available: ${balances.revenueBalance}`);
+      }
+      if (normalizedSource === 'deposit' && balances.depositBalance < totalDeducted) {
+        throw new Error(`Insufficient deposit balance. Required: ${totalDeducted}, Available: ${balances.depositBalance}`);
       }
 
       // Use the provided walletId (validated by controller)
@@ -694,7 +704,10 @@ class PaymentProcessingService {
           referenceNumber: referenceNumber,
           status: 'pending',
           requiresApproval: requiresApproval,
-          metadata: metadata
+          metadata: {
+            ...metadata,
+            withdrawalSource: normalizedSource
+          }
         }
       });
 
@@ -780,7 +793,8 @@ class PaymentProcessingService {
         withdrawalId: withdrawal.withdrawalId,
         amount: withdrawal.totalDeducted,
         referenceNumber: withdrawal.referenceNumber,
-        description: `Withdrawal via ${withdrawal.provider} (includes fee: ${withdrawal.fee} TZS)`
+        description: `Withdrawal via ${withdrawal.provider} (includes fee: ${withdrawal.fee} TZS)`,
+        source: withdrawal.metadata?.withdrawalSource || null
       });
 
       if (withdrawal.fee && parseFloat(withdrawal.fee) > 0) {
@@ -984,7 +998,7 @@ class PaymentProcessingService {
     }
   }
 
-  async debitWallet({ walletId, amount, referenceNumber, description, userId, withdrawalId }) {
+  async debitWallet({ walletId, amount, referenceNumber, description, userId, withdrawalId, source }) {
     const { publishEvent, Topics } = require('../../../../shared/events');
     try {
       await publishEvent(Topics.WITHDRAWAL_APPROVED, {
@@ -993,7 +1007,8 @@ class PaymentProcessingService {
         userId,
         amount: parseFloat(amount),
         referenceNumber,
-        description: description || 'Withdrawal approved'
+        description: description || 'Withdrawal approved',
+        source
       });
       logger.info({ walletId, amount, referenceNumber }, 'Published WITHDRAWAL_APPROVED event');
     } catch (error) {
@@ -1069,6 +1084,36 @@ class PaymentProcessingService {
     }
   }
 
+  async getWalletBalances(walletId) {
+    try {
+      const response = await axios.get(`${WALLET_SERVICE_URL}/${walletId}/balance`, { timeout: 10000 });
+      const data = response.data?.data || response.data || {};
+      const balance = parseFloat(data.balance || 0);
+      const revenueBalance = parseFloat(data.revenueBalance || 0);
+      const depositBalance =
+        data.depositBalance !== undefined
+          ? parseFloat(data.depositBalance || 0)
+          : Math.max(0, balance - revenueBalance);
+
+      return { balance, revenueBalance, depositBalance };
+    } catch (error) {
+      if (error.response) {
+        logger.error('Wallet service error:', {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        });
+        throw new Error(`Wallet service returned ${error.response.status}: ${error.response.data?.error || 'Unknown error'}`);
+      } else if (error.request) {
+        logger.error('No response from wallet service:', error.message);
+        throw new Error('Wallet service is not responding');
+      } else {
+        logger.error('Wallet balance check error:', error.message);
+        throw new Error('Failed to check wallet balance');
+      }
+    }
+  }
+
   async sendNotification({ userId, type, title, message, data = {}, includeSound = false }) {
     try {
       await axios.post(`${NOTIFICATION_SERVICE_URL}/notification/send`, {
@@ -1125,14 +1170,28 @@ class PaymentProcessingService {
         throw new Error(`Cannot confirm deposit with status: ${deposit.status}`);
       }
 
+      const providerTid = TidParser.extractTid(transactionMessage);
+
       // Update deposit with transaction message and change status to pending approval
       await prisma.deposit.update({
         where: { depositId: deposit.depositId },
         data: {
           transactionMessage: transactionMessage,
-          status: 'pending_approval'
+          status: 'pending_approval',
+          ...(providerTid ? { providerTid } : {})
         }
       });
+
+      if (providerTid) {
+        try {
+          await MobileMoneyMessageService.storeMessage(transactionMessage, deposit.depositId);
+        } catch (messageError) {
+          logger.warn(
+            { err: messageError, depositId: deposit.depositId, providerTid },
+            'Failed to store mobile money message for deposit'
+          );
+        }
+      }
 
       // Log audit
       await this.logAudit({

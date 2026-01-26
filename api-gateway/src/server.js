@@ -8,6 +8,7 @@ const morgan = require('morgan');
 const http = require('http');
 const { Server } = require('socket.io');
 const rateLimit = require('express-rate-limit');
+const jwt = require('jsonwebtoken');
 
 const { setupProxy } = require('./config/proxy');
 const { setupSocketIO } = require('./socket/socketHandler');
@@ -17,6 +18,54 @@ const errorHandler = require('./middlewares/errorHandler');
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const app = express();
 const server = http.createServer(app);
+const SERVICE_JWT_TOKEN = process.env.SERVICE_JWT_TOKEN || process.env.PAYMENT_SERVICE_TOKEN || null;
+let cachedServiceToken = null;
+let cachedServiceTokenExpiry = 0;
+
+const getServiceToken = () => {
+  if (SERVICE_JWT_TOKEN) return SERVICE_JWT_TOKEN;
+  const now = Date.now();
+  if (cachedServiceToken && now < cachedServiceTokenExpiry) {
+    return cachedServiceToken;
+  }
+  const secret = process.env.JWT_SECRET;
+  if (!secret) return null;
+  try {
+    const token = jwt.sign({ userId: 'system', role: 'service' }, secret, { expiresIn: '5m' });
+    cachedServiceToken = token;
+    cachedServiceTokenExpiry = now + 4 * 60 * 1000;
+    return token;
+  } catch (error) {
+    logger.error({ error }, '[api-gateway] Failed to create service token');
+    return null;
+  }
+};
+
+const isValidServiceToken = (token) => {
+  if (!token) return false;
+  if (SERVICE_JWT_TOKEN && token === SERVICE_JWT_TOKEN) return true;
+  const secret = process.env.JWT_SECRET;
+  if (!secret) return false;
+  try {
+    const decoded = jwt.verify(token, secret);
+    return decoded?.role === 'service' || decoded?.userId === 'system';
+  } catch {
+    return false;
+  }
+};
+
+const requireInternalAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const serviceToken = req.headers['x-service-token'];
+  const token = serviceToken || bearerToken;
+
+  if (!isValidServiceToken(token)) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  return next();
+};
 
 // Configure trust proxy when running behind a load balancer/reverse proxy
 if (NODE_ENV === 'production') {
@@ -24,38 +73,66 @@ if (NODE_ENV === 'production') {
 }
 
 // Shared CORS configuration
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+const parseOrigins = (value) => (value || '')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
 
-// Specific origins for production
+const allowedOrigins = parseOrigins(process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '');
+const socketAllowedOrigins = parseOrigins(process.env.SOCKET_IO_CORS_ORIGIN || '');
+
+const DEFAULT_DEV_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
 const productionOrigins = [
   'https://play-atlas-games.vercel.app',
   'https://playatlasapi.sifex.co.tz',
-  'https://play-atlas-frontend.vercel.app'
+  'https://play-atlas-frontend.vercel.app',
+  'https://game.stebofarm.co.tz',
+  'https://api.stebofarm.co.tz'
 ];
 
+const getDefaultOrigins = () =>
+  NODE_ENV === 'production' ? productionOrigins : DEFAULT_DEV_ORIGINS;
+
+const isOriginAllowed = (origin, origins) => {
+  if (!origin) return true;
+  return origins.includes('*') || origins.includes(origin);
+};
+
 const resolveCorsOrigin = (origin, callback) => {
-  if (!origin) {
+  const targetOrigins = allowedOrigins.length > 0 ? allowedOrigins : getDefaultOrigins();
+  if (isOriginAllowed(origin, targetOrigins)) {
     return callback(null, true);
   }
-
-  // In production, use specific origins
-  if (NODE_ENV === 'production') {
-    if (productionOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error('Not allowed by CORS'));
-  }
-
-  // In development, allow all or use configured origins
-  if (allowedOrigins.length === 0 || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
-    return callback(null, true);
-  }
-
   return callback(new Error('Not allowed by CORS'));
 };
+
+const resolveSocketCorsOrigin = (origin, callback) => {
+  let targetOrigins = [];
+  if (socketAllowedOrigins.length > 0) {
+    targetOrigins = socketAllowedOrigins;
+  } else if (allowedOrigins.length > 0) {
+    targetOrigins = allowedOrigins;
+  } else {
+    targetOrigins = getDefaultOrigins();
+  }
+
+  if (isOriginAllowed(origin, targetOrigins)) {
+    return callback(null, true);
+  }
+  return callback(new Error('Not allowed by CORS'));
+};
+
+const effectiveCorsOrigins = allowedOrigins.length > 0 ? allowedOrigins : getDefaultOrigins();
+const effectiveSocketCorsOrigins =
+  socketAllowedOrigins.length > 0
+    ? socketAllowedOrigins
+    : allowedOrigins.length > 0
+      ? allowedOrigins
+      : getDefaultOrigins();
+
+// Log CORS configuration for debugging
+logger.info(`CORS Origins: ${effectiveCorsOrigins.join(', ')}`, { service: 'api-gateway' });
+logger.info(`Socket.IO CORS Origins: ${effectiveSocketCorsOrigins.join(', ')}`, { service: 'api-gateway' });
 
 const defaultSocketPath = '/socket.io';
 const socketPath = NODE_ENV === 'development'
@@ -67,8 +144,8 @@ logger.info(`Socket.IO path: ${socketPath}`, { service: 'api-gateway' });
 const io = new Server(server, {
   path: socketPath,
   cors: {
-    origin: NODE_ENV === 'production' ? productionOrigins : (process.env.SOCKET_IO_CORS_ORIGIN === '*' ? true : resolveCorsOrigin),
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    origin: resolveSocketCorsOrigin,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Authorization', 'Content-Type'],
     credentials: true
   },
@@ -76,11 +153,26 @@ const io = new Server(server, {
   transports: ['websocket', 'polling']
 });
 
+// Explicit CORS middleware for Socket.IO endpoints
+app.use('/socket.io/*', (req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && !isOriginAllowed(origin, effectiveSocketCorsOrigins)) {
+    return res.status(403).end();
+  }
+  if (origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Authorization,Content-Type');
+  next();
+});
+
 // Middlewares
 app.use(helmet());
 app.use(
   cors({
-    origin: NODE_ENV === 'production' ? productionOrigins : (allowedOrigins.length > 0 && !allowedOrigins.includes('*') ? allowedOrigins : true),
+    origin: resolveCorsOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Authorization', 'Content-Type', 'Accept']
@@ -119,7 +211,7 @@ app.get('/health', (req, res) => {
 });
 
 // Internal socket broadcast endpoint for services
-app.post('/internal/socket/broadcast', express.json(), (req, res) => {
+app.post('/internal/socket/broadcast', requireInternalAuth, express.json(), (req, res) => {
   try {
     const { type, data } = req.body;
 
@@ -172,15 +264,19 @@ app.post('/internal/socket/broadcast', express.json(), (req, res) => {
 // Batch lookup for match metadata
 app.post('/api/lookup/matches', express.json(), async (req, res) => {
   try {
-    const { opponentIds = [], tournamentIds = [] } = req.body || {};
+    const { opponentIds = [], tournamentIds = [], agentUserIds = [] } = req.body || {};
     const uniqueOpponents = Array.from(new Set(opponentIds.filter(Boolean)));
     const uniqueTournaments = Array.from(new Set(tournamentIds.filter(Boolean)));
+    const uniqueAgentUsers = Array.from(new Set(agentUserIds.filter(Boolean)));
 
     const playerServiceUrl = process.env.PLAYER_SERVICE_URL || 'http://localhost:3002';
     const tournamentServiceUrl = process.env.TOURNAMENT_SERVICE_URL || 'http://localhost:3004';
+    const authServiceUrl = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
 
     const opponents = {};
     const tournaments = {};
+    const agents = {};
+    const opponentAvatars = {};
 
     await Promise.all([
       Promise.all(
@@ -208,10 +304,62 @@ app.post('/api/lookup/matches', express.json(), async (req, res) => {
             logger.error({ error, tournamentId }, '[lookup/matches] Failed to resolve tournament');
           }
         })
-      )
+      ),
+      (async () => {
+        if (!uniqueAgentUsers.length) return;
+        const serviceToken = getServiceToken();
+        if (!serviceToken) {
+          logger.warn('[lookup/matches] Missing service token; cannot resolve agent names');
+          return;
+        }
+        try {
+          const response = await fetch(
+            `${authServiceUrl}/internal/users/lookup?ids=${encodeURIComponent(uniqueAgentUsers.join(','))}`,
+            { headers: { Authorization: `Bearer ${serviceToken}` } }
+          );
+          if (!response.ok) return;
+          const payload = await response.json();
+          const users = payload?.data || [];
+          users.forEach((user) => {
+            if (user?.userId && user?.displayName) {
+              agents[user.userId] = user.displayName;
+            }
+          });
+        } catch (error) {
+          logger.error({ error }, '[lookup/matches] Failed to resolve agent names');
+        }
+      })()
+      ,
+      (async () => {
+        if (!uniqueOpponents.length) return;
+        const serviceToken = getServiceToken();
+        if (!serviceToken) {
+          logger.warn('[lookup/matches] Missing service token; cannot resolve opponent avatars');
+          return;
+        }
+        try {
+          const response = await fetch(
+            `${authServiceUrl}/internal/users/lookup?ids=${encodeURIComponent(uniqueOpponents.join(','))}`,
+            { headers: { Authorization: `Bearer ${serviceToken}` } }
+          );
+          if (!response.ok) return;
+          const payload = await response.json();
+          const users = payload?.data || [];
+          users.forEach((user) => {
+            if (user?.userId && user?.displayName) {
+              opponents[user.userId] = opponents[user.userId] || user.displayName;
+            }
+            if (user?.userId && user?.avatarUrl) {
+              opponentAvatars[user.userId] = user.avatarUrl;
+            }
+          });
+        } catch (error) {
+          logger.error({ error }, '[lookup/matches] Failed to resolve opponent avatars');
+        }
+      })()
     ]);
 
-    res.json({ success: true, data: { opponents, tournaments } });
+    res.json({ success: true, data: { opponents, opponentAvatars, tournaments, agents } });
   } catch (error) {
     logger.error({ error }, '[lookup/matches] Failed to resolve match lookups');
     res.status(500).json({ success: false, error: 'Failed to resolve match lookups' });

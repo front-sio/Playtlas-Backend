@@ -22,6 +22,26 @@ const normalizePhoneNumber = (phoneNumber, countryCode = '+255') => {
   return cleaned;
 };
 
+const DEFAULT_PLATFORM_FEE_PERCENTAGE = Number(process.env.PLATFORM_FEE_PERCENTAGE || 0.30);
+
+const normalizePlatformFeePercent = (value) => {
+  let percent = Number(value);
+  if (!Number.isFinite(percent)) {
+    percent = DEFAULT_PLATFORM_FEE_PERCENTAGE;
+  }
+  if (percent > 1) {
+    percent = percent / 100;
+  }
+  if (percent < 0) percent = 0;
+  if (percent > 1) percent = 1;
+  return percent;
+};
+
+const roundCurrency = (value) => {
+  const rounded = Math.round(Number(value) * 100) / 100;
+  return Number.isFinite(rounded) ? rounded : 0;
+};
+
 const ADMIN_ROLES = new Set([
   'admin',
   'super_admin',
@@ -43,6 +63,34 @@ const ensureAdmin = (req, res) => {
   return true;
 };
 
+const toAmountNumber = (value) => {
+  if (value == null) return 0;
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const calculateRevenueDebit = ({ balance, revenueBalance, amount }) => {
+  const safeBalance = Math.max(0, toAmountNumber(balance));
+  const safeRevenue = Math.max(0, toAmountNumber(revenueBalance));
+  const depositBalance = Math.max(0, safeBalance - safeRevenue);
+  const revenueDebit = Math.max(0, amount - depositBalance);
+  return { revenueDebit, depositBalance, safeRevenue, safeBalance };
+};
+
+const PRIZE_TYPES = new Set([
+  'winner_prize',
+  'runner_up_prize',
+  'third_place_prize',
+  'tournament_prize',
+  'prize',
+  'prize_won'
+]);
+
+const isPrizeCredit = (metadata) => {
+  const type = String(metadata?.type || '').toLowerCase();
+  return PRIZE_TYPES.has(type);
+};
+
 exports.createWallet = async (req, res) => {
   try {
     const { userId, type = 'player', currency = 'TZS', metadata } = req.body;
@@ -53,6 +101,7 @@ exports.createWallet = async (req, res) => {
         type,
         currency,
         balance: 0,
+        revenueBalance: 0,
         locked: 0,
         metadata: metadata || {}
       }
@@ -96,7 +145,19 @@ exports.getBalance = async (req, res) => {
   try {
     const wallet = await prisma.wallet.findUnique({ where: { walletId: req.params.walletId } });
     if (!wallet) return res.status(404).json({ success: false, error: 'Wallet not found' });
-    res.json({ success: true, data: { walletId: wallet.walletId, balance: parseFloat(wallet.balance), currency: wallet.currency } });
+    const balance = parseFloat(wallet.balance);
+    const revenueBalance = parseFloat(wallet.revenueBalance || 0);
+    const depositBalance = Math.max(0, balance - revenueBalance);
+    res.json({
+      success: true,
+      data: {
+        walletId: wallet.walletId,
+        balance,
+        revenueBalance,
+        depositBalance,
+        currency: wallet.currency
+      }
+    });
   } catch (error) {
     logger.error('Get balance error:', error);
     res.status(500).json({ success: false, error: 'Failed to get balance' });
@@ -127,7 +188,22 @@ exports.getUserBalance = async (req, res) => {
       });
     }
 
-    res.json({ success: true, data: { walletId: wallet.walletId, balance: parseFloat(wallet.balance), currency: wallet.currency, locked: parseFloat(wallet.locked), totalWins: wallet.totalWins, totalLosses: wallet.totalLosses } });
+    const balance = parseFloat(wallet.balance);
+    const revenueBalance = parseFloat(wallet.revenueBalance || 0);
+    const depositBalance = Math.max(0, balance - revenueBalance);
+    res.json({
+      success: true,
+      data: {
+        walletId: wallet.walletId,
+        balance,
+        revenueBalance,
+        depositBalance,
+        currency: wallet.currency,
+        locked: parseFloat(wallet.locked),
+        totalWins: wallet.totalWins,
+        totalLosses: wallet.totalLosses
+      }
+    });
   } catch (error) {
     logger.error('Get user balance error:', error);
     res.status(500).json({ success: false, error: 'Failed to get user balance' });
@@ -138,11 +214,16 @@ exports.creditWallet = async (req, res) => {
   try {
     // This endpoint should only be used for internal system operations
     // Regular deposits should go through payment-service which publishes Kafka events
-    const { walletId, amount, description = 'Wallet credit' } = req.body;
+    const { walletId, amount, description = 'Wallet credit', balanceType } = req.body;
+    const creditAmount = parseFloat(amount);
+    const updateData = { balance: { increment: creditAmount } };
+    if (balanceType === 'revenue') {
+      updateData.revenueBalance = { increment: creditAmount };
+    }
 
     const updatedWallet = await prisma.wallet.update({
       where: { walletId },
-      data: { balance: { increment: parseFloat(amount) } }
+      data: updateData
     });
 
     logger.info({ walletId, amount }, 'Wallet credited (direct)');
@@ -157,15 +238,21 @@ exports.debitWallet = async (req, res) => {
   try {
     // This endpoint should only be used for internal system operations
     // Regular withdrawals should go through payment-service which publishes Kafka events
-    const { walletId, amount, description = 'Wallet debit' } = req.body;
+    const { walletId, amount, description = 'Wallet debit', balanceType } = req.body;
 
     const wallet = await prisma.wallet.findUnique({ where: { walletId } });
     if (!wallet) throw new Error('Wallet not found');
-    if (wallet.balance < parseFloat(amount)) throw new Error('Insufficient funds');
+    const debitAmount = parseFloat(amount);
+    if (wallet.balance < debitAmount) throw new Error('Insufficient funds');
+
+    const updateData = { balance: { decrement: debitAmount } };
+    if (balanceType === 'revenue') {
+      updateData.revenueBalance = { decrement: debitAmount };
+    }
 
     const updatedWallet = await prisma.wallet.update({
       where: { walletId },
-      data: { balance: { decrement: parseFloat(amount) } }
+      data: updateData
     });
 
     logger.info({ walletId, amount }, 'Wallet debited (direct)');
@@ -234,33 +321,68 @@ exports.rejectDeposit = async (req, res) => {
 
 exports.payTournamentFee = async (req, res) => {
   try {
-    const { playerWalletId, amount, tournamentId, seasonId, idempotencyKey } = req.body;
+    const { playerWalletId, amount, tournamentId, seasonId, idempotencyKey, platformFeePercent } = req.body;
 
     const result = await prisma.$transaction(async (tx) => {
       const playerWallet = await tx.wallet.findUnique({ where: { walletId: playerWalletId } });
       const systemWallet = await ensureSystemWallet(tx);
+      const platformWallet = await ensurePlatformWallet(tx);
 
       if (!playerWallet) {
         throw new Error('Wallet not found');
       }
 
-      if (playerWallet.balance < parseFloat(amount)) {
+      const debitAmount = parseFloat(amount);
+      if (playerWallet.balance < debitAmount) {
         throw new Error('Insufficient funds');
       }
 
+      const feePercent = normalizePlatformFeePercent(platformFeePercent);
+      const platformFeeAmount = roundCurrency(debitAmount * feePercent);
+      const systemAmount = roundCurrency(debitAmount - platformFeeAmount);
+      if (systemAmount < 0) {
+        throw new Error('Invalid platform fee configuration');
+      }
+
+      const { revenueDebit, safeRevenue } = calculateRevenueDebit({
+        balance: playerWallet.balance,
+        revenueBalance: playerWallet.revenueBalance,
+        amount: debitAmount
+      });
+
+      if (revenueDebit > safeRevenue) {
+        throw new Error('Insufficient revenue balance for this debit');
+      }
+
       // Debit from player wallet
+      const playerUpdate = {
+        balance: { decrement: debitAmount }
+      };
+      if (revenueDebit > 0) {
+        playerUpdate.revenueBalance = { decrement: revenueDebit };
+      }
       await tx.wallet.update({
         where: { walletId: playerWalletId },
-        data: { balance: { decrement: parseFloat(amount) } }
+        data: playerUpdate
       });
 
       // Credit to system wallet
       await tx.wallet.update({
         where: { walletId: systemWallet.walletId },
-        data: { balance: { increment: parseFloat(amount) } }
+        data: { balance: { increment: systemAmount } }
       });
 
-      return { playerWallet, systemWallet };
+      if (platformFeeAmount > 0) {
+        await tx.wallet.update({
+          where: { walletId: platformWallet.walletId },
+          data: {
+            balance: { increment: platformFeeAmount },
+            revenueBalance: { increment: platformFeeAmount }
+          }
+        });
+      }
+
+      return { playerWallet, systemWallet, platformWallet, systemAmount, platformFeeAmount };
     });
 
     logger.info({ playerWalletId, amount, tournamentId, seasonId }, 'Tournament fee paid');
@@ -312,21 +434,43 @@ exports.transferFunds = async (req, res) => {
       const toWallet = await tx.wallet.findUnique({ where: { walletId: toWalletId } });
 
       if (!fromWallet || !toWallet) throw new Error('Wallet not found');
-      if (fromWallet.balance < parseFloat(amount)) throw new Error('Insufficient funds');
+      const transferAmount = parseFloat(amount);
+      if (fromWallet.balance < transferAmount) throw new Error('Insufficient funds');
+
+      const { revenueDebit, safeRevenue } = calculateRevenueDebit({
+        balance: fromWallet.balance,
+        revenueBalance: fromWallet.revenueBalance,
+        amount: transferAmount
+      });
+      if (revenueDebit > safeRevenue) {
+        throw new Error('Insufficient revenue balance for this transfer');
+      }
 
       // Debit from source wallet
+      const fromUpdate = {
+        balance: { decrement: transferAmount }
+      };
+      if (revenueDebit > 0) {
+        fromUpdate.revenueBalance = { decrement: revenueDebit };
+      }
       await tx.wallet.update({
         where: { walletId: fromWalletId },
-        data: { balance: { decrement: parseFloat(amount) } }
+        data: fromUpdate
       });
 
       // Credit to destination wallet
+      const toUpdate = {
+        balance: { increment: transferAmount }
+      };
+      if (isPrizeCredit(metadata)) {
+        toUpdate.revenueBalance = { increment: transferAmount };
+      }
       await tx.wallet.update({
         where: { walletId: toWalletId },
-        data: { balance: { increment: parseFloat(amount) } }
+        data: toUpdate
       });
 
-      return { fromWalletId, toWalletId, amount };
+      return { fromWalletId, toWalletId, amount: transferAmount };
     });
 
     logger.info({ fromWalletId, toWalletId, amount }, 'Funds transferred');
@@ -418,19 +562,41 @@ exports.transferFundsByPhone = async (req, res) => {
       if (fromWallet.walletId === toWallet.walletId) {
         throw new Error('Cannot transfer to the same wallet');
       }
-      if (fromWallet.balance < parseFloat(amount)) throw new Error('Insufficient funds');
+      const transferAmount = parseFloat(amount);
+      if (fromWallet.balance < transferAmount) throw new Error('Insufficient funds');
 
+      const { revenueDebit, safeRevenue } = calculateRevenueDebit({
+        balance: fromWallet.balance,
+        revenueBalance: fromWallet.revenueBalance,
+        amount: transferAmount
+      });
+      if (revenueDebit > safeRevenue) {
+        throw new Error('Insufficient revenue balance for this transfer');
+      }
+
+      const fromUpdate = {
+        balance: { decrement: transferAmount }
+      };
+      if (revenueDebit > 0) {
+        fromUpdate.revenueBalance = { decrement: revenueDebit };
+      }
       await tx.wallet.update({
         where: { walletId: fromWalletId },
-        data: { balance: { decrement: parseFloat(amount) } }
+        data: fromUpdate
       });
 
+      const toUpdate = {
+        balance: { increment: transferAmount }
+      };
+      if (isPrizeCredit(metadata)) {
+        toUpdate.revenueBalance = { increment: transferAmount };
+      }
       await tx.wallet.update({
         where: { walletId: recipientWallet.walletId },
-        data: { balance: { increment: parseFloat(amount) } }
+        data: toUpdate
       });
 
-      return { fromWalletId, toWalletId: recipientWallet.walletId, amount };
+      return { fromWalletId, toWalletId: recipientWallet.walletId, amount: transferAmount };
     });
 
     logger.info({ fromWalletId, toPhoneNumber, amount }, 'Funds transferred by phone');

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { body } = require('express-validator');
 const authController = require('../controllers/authController');
-const {authenticate, authorize} = require('../middlewares/authMiddleware');
+const { authenticate, authorize } = require('../middlewares/authMiddleware');
 const validate = require('../middlewares/validate');
 
 // Validation rules
@@ -14,7 +14,8 @@ const registerValidation = [
   body('firstName').trim().notEmpty().withMessage('First name is required'),
   body('lastName').trim().notEmpty().withMessage('Last name is required'),
   body('gender').trim().isIn(['male', 'female']).withMessage('Gender must be either male or female'),
-  body('channel').optional().isIn(['email', 'sms']).withMessage('Channel must be email or sms')
+  body('channel').optional().isIn(['email', 'sms']).withMessage('Channel must be email or sms'),
+  body('clubId').optional().isUUID().withMessage('clubId must be a valid UUID')
 ];
 
 const loginValidation = [
@@ -32,16 +33,24 @@ router.post('/reset-password', authController.resetPassword);
 router.post('/refresh', authController.refreshToken);
 router.post('/logout', authenticate, authController.logout);
 router.get('/me', authenticate, authController.getCurrentUser);
+router.post('/change-password', authenticate, authController.changePassword);
+const upload = require('../middlewares/uploadMiddleware');
+
+// ... (existing code)
+
+router.put('/avatar', authenticate, upload.single('avatar'), authController.updateAvatar);
 router.put('/payout-phone', authenticate, authController.updatePayoutPhone);
 router.post('/dev-auto-verify', authController.devAutoVerify);
 router.get('/users/lookup/phone/:phoneNumber', authenticate, authController.lookupUserByPhone);
 
 // Admin: user management and stats
 const adminRoles = ['admin', 'super_admin', 'manager', 'director', 'staff'];
+const serviceRoles = [...adminRoles, 'service', 'superuser', 'superadmin'];
 router.post('/users', authenticate, authorize(adminRoles), authController.createUser);
 router.get('/users', authenticate, authorize(adminRoles), authController.listUsers);
 router.put('/users/:userId', authenticate, authorize(adminRoles), authController.updateUser);
 router.post('/users/:userId/suspend', authenticate, authorize(adminRoles), authController.suspendUser);
 router.get('/stats', authenticate, authorize(adminRoles), authController.getStats);
+router.get('/internal/users/lookup', authenticate, authorize(serviceRoles), authController.lookupUsersByIds);
 
 module.exports = router;

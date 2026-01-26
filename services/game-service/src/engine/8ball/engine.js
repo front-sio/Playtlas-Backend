@@ -17,6 +17,66 @@ const DEFAULTS = {
   maxPower: 5000,
 };
 
+function toVector2D(value, fallbackX = 0, fallbackY = 0) {
+  if (value instanceof Vector2D) return value;
+  if (!value || typeof value !== 'object') return new Vector2D(fallbackX, fallbackY);
+  const x = Number(value.x ?? value.xValue ?? fallbackX);
+  const y = Number(value.y ?? value.yValue ?? fallbackY);
+  return new Vector2D(x, y);
+}
+
+function asPlainVector(value) {
+  if (!value) return { x: 0, y: 0 };
+  const x = Number(value.x ?? value.xValue ?? 0);
+  const y = Number(value.y ?? value.yValue ?? 0);
+  return { x, y };
+}
+
+function sanitizeBallForSnapshot(ball) {
+  if (!ball) return ball;
+  return {
+    ...ball,
+    position: asPlainVector(ball.position),
+    velocity: asPlainVector(ball.velocity),
+    deltaScrew: asPlainVector(ball.deltaScrew),
+    contactArray: [],
+    firstContact: 0,
+    lastCollisionObject: null,
+    lastVertex: null,
+  };
+}
+
+function sanitizeStateForSnapshot(state) {
+  if (!state) return state;
+  const balls = Array.isArray(state.balls)
+    ? state.balls.map((ball) => sanitizeBallForSnapshot(ball))
+    : state.balls;
+  return { ...state, balls };
+}
+
+function rehydrateBall(ball, ballRadius) {
+  if (!ball) return ball;
+  return {
+    ...ball,
+    position: toVector2D(ball.position),
+    velocity: toVector2D(ball.velocity),
+    deltaScrew: toVector2D(ball.deltaScrew),
+    contactArray: [],
+    firstContact: 0,
+    lastCollisionObject: null,
+    lastVertex: null,
+    ballRadius: ball.ballRadius || ballRadius,
+  };
+}
+
+function rehydrateState(state, ballRadius) {
+  if (!state) return state;
+  const balls = Array.isArray(state.balls)
+    ? state.balls.map((ball) => rehydrateBall(ball, ballRadius))
+    : state.balls;
+  return { ...state, balls };
+}
+
 function createBall(id, position, ballRadius) {
   const ball = {
     id,
@@ -84,22 +144,22 @@ class EightBallEngine {
   loadState(snapshot) {
     if (!snapshot) return;
     if (snapshot.state) {
-      this.state = snapshot.state;
-      this.rules.setState(snapshot.state.rulesState || {});
+      this.state = rehydrateState(snapshot.state, this.config.ballRadius);
+      this.rules.setState(this.state.rulesState || {});
       if (snapshot.seed) {
         this.seed = snapshot.seed;
         this.rng = createRng(snapshot.seed);
       }
       return;
     }
-    this.state = snapshot;
-    this.rules.setState(snapshot.rulesState || {});
+    this.state = rehydrateState(snapshot, this.config.ballRadius);
+    this.rules.setState(this.state.rulesState || {});
   }
 
   getSnapshot() {
     return {
       seed: this.seed,
-      state: JSON.parse(JSON.stringify(this.state)),
+      state: sanitizeStateForSnapshot(this.state),
     };
   }
 
@@ -123,7 +183,10 @@ class EightBallEngine {
     }
 
     const cueBall = this.state.balls[0];
-    if (!cueBall || cueBall.active !== 1) {
+    if (!cueBall) {
+      return { ok: false, error: 'Cue ball not available' };
+    }
+    if (!this.state.cueBallInHand && cueBall.active !== 1) {
       return { ok: false, error: 'Cue ball not available' };
     }
 

@@ -2,8 +2,9 @@ const cron = require('node-cron');
 const { prisma } = require('../config/db');
 const logger = require('../utils/logger');
 const { emitSeasonUpdate } = require('../utils/socketEmitter');
-const { publishEvent, Topics } = require('../../../shared/events');
+const { publishEvent, Topics } = require('../../../../shared/events');
 const { ensureAiParticipant, normalizeGameType } = require('./schedulerQueue');
+// AI logic removed
 
 const JOIN_WINDOW_MINUTES = Number(process.env.SEASON_JOIN_WINDOW_MINUTES || 30);
 const FIXTURE_DELAY_MINUTES = Number(process.env.SEASON_FIXTURE_DELAY_MINUTES || 4);
@@ -41,6 +42,10 @@ const startSeasonGenerator = () => {
 
       for (const tournament of activeTournaments) {
         const gameType = normalizeGameType(tournament?.metadata?.gameType);
+        const aiSettings = gameType === 'with_ai' ? computeAiSettings(tournament.entryFee) : null;
+        const seasonLevel = tournament?.metadata?.level ?? aiSettings?.level ?? null;
+        const seasonAiDifficulty = tournament?.metadata?.aiDifficulty ?? aiSettings?.aiDifficulty ?? null;
+        const seasonAiRating = tournament?.metadata?.aiRating ?? aiSettings?.aiRating ?? null;
         const existingUpcomingCount = await prisma.season.count({
           where: {
             tournamentId: tournament.tournamentId,
@@ -104,7 +109,10 @@ const startSeasonGenerator = () => {
               name: newSeason.name,
               startTime: startTime.toISOString(),
               endTime: endTime.toISOString(),
-              joinDeadline: new Date(now.getTime() + JOIN_WINDOW_MINUTES * 60 * 1000).toISOString()
+              joinDeadline: new Date(now.getTime() + JOIN_WINDOW_MINUTES * 60 * 1000).toISOString(),
+              level: seasonLevel,
+              aiDifficulty: seasonAiDifficulty,
+              aiRating: seasonAiRating
             });
           } catch (eventError) {
             logger.error({ err: eventError, seasonId: newSeason.seasonId }, 'Failed to publish SEASON_CREATED event');

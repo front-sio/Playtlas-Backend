@@ -51,10 +51,14 @@ exports.initGame = async (req, res) => {
     const isAiGame = player2Id === AI_PLAYER_ID || gameType === 'with_ai';
 
     // Create game instance
+    const rawDifficulty = Number(aiDifficulty ?? 3); // Default to level 3 instead of 50
+    const normalizedDifficulty = Number.isFinite(rawDifficulty)
+      ? Math.max(1, Math.min(20, Math.round(rawDifficulty))) // Cap at 20 for fair play
+      : 3;
     const game = new ServerGameManager({
       matchId,
       gameType: isAiGame ? 'with_ai' : 'multiplayer',
-      aiDifficulty: aiDifficulty || 3
+      aiDifficulty: normalizedDifficulty
     });
 
     activeGames.set(matchId, game);
@@ -153,7 +157,7 @@ exports.executeShot = async (req, res) => {
     
     // Get match to determine player sides
     const match = await prisma.match.findUnique({
-      where: { id: matchId }
+      where: { matchId: matchId }
     });
 
     if (!match) {
@@ -260,7 +264,7 @@ exports.executeAiTurn = async (req, res) => {
     // Check if it's AI's turn
     const gameState = game.getGameState();
     const match = await prisma.match.findUnique({
-      where: { id: matchId }
+      where: { matchId: matchId }
     });
 
     if (!match) {
@@ -394,11 +398,13 @@ async function handleGameEnd(matchId, game, match) {
 
     // Update match status
     await prisma.match.update({
-      where: { id: matchId },
+      where: { matchId: matchId },
       data: {
         status: 'completed',
         winnerId: winnerPlayerId,
         completedAt: new Date(),
+        player1Score: gameState.p1Score || 0,
+        player2Score: gameState.p2Score || 0,
         metadata: {
           ...match.metadata,
           gameResult: {
@@ -412,16 +418,15 @@ async function handleGameEnd(matchId, game, match) {
       }
     });
 
-    // Publish match completed event (for payment processing)
-    await publishEvent(Topics.MATCH_COMPLETED, {
-      matchId,
-      winnerId: winnerPlayerId,
-      player1Id: match.player1Id,
-      player2Id: match.player2Id,
-      betAmount: match.betAmount,
-      gameType: match.gameType,
-      timestamp: Date.now()
-    });
+    if (winnerPlayerId) {
+      await publishEvent(Topics.MATCH_RESULT, {
+        matchId,
+        winnerId: winnerPlayerId,
+        player1Score: gameState.p1Score,
+        player2Score: gameState.p2Score,
+        reason: 'completed'
+      });
+    }
 
     // Clean up game instance after short delay
     setTimeout(() => {

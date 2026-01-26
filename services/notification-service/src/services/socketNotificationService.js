@@ -1,7 +1,7 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 
-const API_GATEWAY_URL = process.env.API_GATEWAY_URL || 'http://localhost:3000';
+const GAME_SERVICE_URL = process.env.GAME_SERVICE_URL || 'http://localhost:8081';
 
 class SocketNotificationService {
   /**
@@ -11,9 +11,10 @@ class SocketNotificationService {
    */
   async sendToUser(userId, notification) {
     try {
-      await axios.post(`${API_GATEWAY_URL}/internal/socket/broadcast`, {
-        type: 'user:notification',
-        data: {
+      // Try to send via game-service socket (if available)
+      // This is optional - notifications are primarily stored in DB
+      try {
+        await axios.post(`${GAME_SERVICE_URL}/api/socket/notify`, {
           userId,
           notification: {
             id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -24,22 +25,29 @@ class SocketNotificationService {
             timestamp: new Date().toISOString(),
             read: false
           }
-        }
-      }, {
-        timeout: 5000,
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
+        }, {
+          timeout: 2000,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
 
-      logger.info({ userId, type: notification.type }, '[SocketNotificationService] Notification sent to user');
+        logger.info({ userId, type: notification.type }, '[SocketNotificationService] Notification sent via socket');
+      } catch (socketError) {
+        // Socket broadcast failed - this is OK, notification is still in DB
+        logger.debug({ 
+          userId, 
+          notificationType: notification.type,
+          error: socketError.message 
+        }, '[SocketNotificationService] Socket broadcast unavailable, notification stored in DB');
+      }
     } catch (error) {
       logger.error({ 
         err: error, 
         userId, 
         notificationType: notification.type 
-      }, '[SocketNotificationService] Failed to send notification to user');
-      throw error;
+      }, '[SocketNotificationService] Failed to process notification');
+      // Don't throw - notification is already in DB
     }
   }
 
@@ -49,9 +57,9 @@ class SocketNotificationService {
    */
   async broadcast(notification) {
     try {
-      await axios.post(`${API_GATEWAY_URL}/internal/socket/broadcast`, {
-        type: 'global:notification',
-        data: {
+      // Try to broadcast via game-service socket (if available)
+      try {
+        await axios.post(`${GAME_SERVICE_URL}/api/socket/broadcast`, {
           notification: {
             id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             type: notification.type,
@@ -61,21 +69,27 @@ class SocketNotificationService {
             timestamp: new Date().toISOString(),
             read: false
           }
-        }
-      }, {
-        timeout: 5000,
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
+        }, {
+          timeout: 2000,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
 
-      logger.info({ type: notification.type }, '[SocketNotificationService] Notification broadcasted to all users');
+        logger.info({ type: notification.type }, '[SocketNotificationService] Notification broadcasted via socket');
+      } catch (socketError) {
+        // Socket broadcast failed - this is OK
+        logger.debug({ 
+          notificationType: notification.type,
+          error: socketError.message 
+        }, '[SocketNotificationService] Socket broadcast unavailable');
+      }
     } catch (error) {
       logger.error({ 
         err: error, 
         notificationType: notification.type 
-      }, '[SocketNotificationService] Failed to broadcast notification');
-      throw error;
+      }, '[SocketNotificationService] Failed to process broadcast');
+      // Don't throw - notifications can still be retrieved via API
     }
   }
 

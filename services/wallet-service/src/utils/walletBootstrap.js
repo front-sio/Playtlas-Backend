@@ -28,7 +28,8 @@ async function findOrCreateWallet(db, { type, walletId, ownerId }) {
     ownerId,
     type,
     currency: 'TZS',
-    balance: 0
+    balance: 0,
+    revenueBalance: 0
   };
 
   if (walletId) data.walletId = walletId;

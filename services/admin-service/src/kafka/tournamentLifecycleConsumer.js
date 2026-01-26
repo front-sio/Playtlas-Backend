@@ -29,6 +29,7 @@ async function startTournamentLifecycleConsumer() {
     [
       Topics.TOURNAMENT_CREATED,
       Topics.TOURNAMENT_STARTED,
+      Topics.TOURNAMENT_RESUMED,
       Topics.TOURNAMENT_STOPPED,
       Topics.TOURNAMENT_CANCELLED
     ],

@@ -3,6 +3,8 @@ const { prisma } = require('../config/db');
 const logger = require('../utils/logger');
 const { subscribeEvents, Topics } = require('../../../../shared/events');
 const { getServiceToken } = require('../utils/serviceAuth');
+const { emitSeasonUpdate } = require('../utils/socketEmitter');
+const { ensureTournamentSchedule } = require('../jobs/schedulerQueue');
 
 // Defaults for multiplayer; with_ai will override dynamically
 const DEFAULT_PLATFORM_FEE_PERCENTAGE = Number(process.env.PLATFORM_FEE_PERCENTAGE || 0.30);
@@ -18,22 +20,21 @@ function normalizeMoney(value) {
   return isFinite(v) ? v : 0;
 }
 
+function normalizePlacementId(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') {
+    return value.playerId || value.id || null;
+  }
+  return null;
+}
+
 async function fetchSystemWallet() {
   try {
     const res = await axios.get(`${WALLET_SERVICE_URL}/system/wallet`, { timeout: 10000 });
     return res.data?.data || res.data;
   } catch (err) {
     logger.error({ err }, '[seasonCompletion] Failed to fetch system wallet');
-    return null;
-  }
-}
-
-async function fetchPlatformWallet() {
-  try {
-    const res = await axios.get(`${WALLET_SERVICE_URL}/platform/wallet`, { timeout: 10000 });
-    return res.data?.data || res.data;
-  } catch (err) {
-    logger.error({ err }, '[seasonCompletion] Failed to fetch platform wallet');
     return null;
   }
 }
@@ -67,7 +68,8 @@ async function transferFunds({ fromWalletId, toWalletId, amount, description, me
 async function handleSeasonCompleted(payload) {
   const { tournamentId, seasonId, placements, endedAt } = payload || {};
   if (!tournamentId || !seasonId) return;
-  if (!placements || !placements.first) {
+  const isDraw = Boolean(payload?.draw || placements?.draw);
+  if (!placements || (!placements.first && !isDraw)) {
     logger.info({ seasonId }, '[seasonCompletion] No placements provided; skipping payout');
     return;
   }
@@ -87,149 +89,163 @@ async function handleSeasonCompleted(payload) {
       status: { in: ['winner', 'runner_up', 'third_place'] }
     }
   });
-  if (existingWinners) {
+  const skipPayout = Boolean(existingWinners && !isDraw);
+  if (skipPayout) {
     logger.info({ seasonId }, '[seasonCompletion] Winners already set; skipping payout');
-    return;
   }
 
   const playerCount = season.tournamentPlayers.length;
   const entryFee = Number(season.tournament.entryFee || 0);
-  
+
+  // Determine game type
+  const gameType = season.tournament.gameType || 'normal';
+  const isWithAi = false;
+
+  // Platform fee percentage: 10% for with_ai, 30% for normal
+  const platformFeePercent = isWithAi ? 0.10 : DEFAULT_PLATFORM_FEE_PERCENTAGE;
+  const effectiveFeePercent = Math.min(Math.max(platformFeePercent, 0), 1);
+
   // For with_ai: potAmount = entryFee × 2 (human + AI) - assumes exactly 2 participants per season
   // For normal: potAmount = entryFee × playerCount
-  const potAmount = normalizeMoney(isWithAi ? entryFee * 2 : entryFee * playerCount);
-  
+  const grossPotAmount = normalizeMoney(isWithAi ? entryFee * 2 : entryFee * playerCount);
+  const potAmount = normalizeMoney(grossPotAmount * (1 - effectiveFeePercent));
+
   if (potAmount <= 0) {
-    logger.warn({ seasonId, entryFee, playerCount, isWithAi }, '[seasonCompletion] Pot amount is zero; skipping payout');
+    logger.warn({ seasonId, entryFee, playerCount, isWithAi, grossPotAmount }, '[seasonCompletion] Pot amount is zero; skipping payout');
+    if (!skipPayout) {
+      await prisma.season.updateMany({
+        where: { seasonId, tournamentId, status: { not: 'completed' } },
+        data: {
+          status: 'completed',
+          completedAt: endedAt ? new Date(endedAt) : new Date(),
+          finalMatchId: payload?.finalMatchId || null,
+          finalizedByJobId: payload?.finalizedByJobId || null,
+          errorReason: null
+        }
+      });
+    }
     return;
   }
 
   const systemWallet = await fetchSystemWallet();
-  const platformWallet = await fetchPlatformWallet();
-  if (!systemWallet?.walletId || !platformWallet?.walletId) {
-    logger.warn({ seasonId }, '[seasonCompletion] Missing system/platform wallet; skipping payout');
+  if (!systemWallet?.walletId) {
+    logger.warn({ seasonId }, '[seasonCompletion] Missing system wallet; skipping payout');
+    if (!skipPayout) {
+      await prisma.season.updateMany({
+        where: { seasonId, tournamentId, status: { not: 'completed' } },
+        data: {
+          status: 'completed',
+          completedAt: endedAt ? new Date(endedAt) : new Date(),
+          finalMatchId: payload?.finalMatchId || null,
+          finalizedByJobId: payload?.finalizedByJobId || null,
+          errorReason: null
+        }
+      });
+    }
     return;
   }
 
-  const platformFee = normalizeMoney(potAmount * PLATFORM_FEE_PERCENTAGE);
-  const remaining = normalizeMoney(potAmount - platformFee);
+  const platformFee = 0;
+  const remaining = normalizeMoney(potAmount);
 
-  const hasThirdPlace = Boolean(placements.third);
-  const hasSecondPlace = Boolean(placements.second);
-  let firstPct = FIRST_PLACE_PERCENTAGE;
-  let secondPct = hasThirdPlace ? SECOND_PLACE_PERCENTAGE : (hasSecondPlace ? SECOND_PLACE_PERCENTAGE : 0);
-  let thirdPct = hasThirdPlace ? THIRD_PLACE_PERCENTAGE : 0;
+  const playerCount = Number(placements.playerCount || season.tournamentPlayers.length);
+  
+  // Winner gets 100% of the pot in all cases
+  let firstPct = 1.0;
+  let secondPct = 0;
+  let thirdPct = 0;
 
-  if (!hasThirdPlace && hasSecondPlace) {
-    const totalPct = FIRST_PLACE_PERCENTAGE + SECOND_PLACE_PERCENTAGE;
-    if (totalPct > 0) {
-      firstPct = FIRST_PLACE_PERCENTAGE / totalPct;
-      secondPct = SECOND_PLACE_PERCENTAGE / totalPct;
-    }
-  }
+  // compute amounts and distribute remainder to first place
+  let firstAmount = normalizeMoney(remaining * firstPct);
+  let secondAmount = normalizeMoney(remaining * secondPct);
+  let thirdAmount = normalizeMoney(remaining * thirdPct);
 
-    firstAmount = normalizeMoney(remaining * firstPct);
-    secondAmount = normalizeMoney(remaining * secondPct);
-    thirdAmount = normalizeMoney(remaining * thirdPct);
-
-    const distributed = normalizeMoney(firstAmount + secondAmount + thirdAmount);
-    const remainder = normalizeMoney(remaining - distributed);
-    if (remainder !== 0) {
-      firstAmount = normalizeMoney(firstAmount + remainder); // assign remainder to first
-    }
+  const distributed = normalizeMoney(firstAmount + secondAmount + thirdAmount);
+  const remainder = normalizeMoney(remaining - distributed);
+  if (remainder !== 0) {
+    firstAmount = normalizeMoney(firstAmount + remainder); // assign remainder to first
   }
 
   const payoutMetadata = { tournamentId, seasonId };
 
-  if (platformFee > 0) {
-    await transferFunds({
-      fromWalletId: systemWallet.walletId,
-      toWalletId: platformWallet.walletId,
-      amount: platformFee,
-      description: isWithAi ? 'Platform fee (with_ai 10%)' : 'Platform fee (multiplayer)',
-      metadata: { tournamentId, seasonId, type: 'platform_fee', gameType, feePercent: platformFeePercent },
-      referenceNumber: `PLATFORM_FEE:${seasonId}`,
-      fromUserId: 'system',
-      toUserId: 'platform'
-    });
-  } catch (err) {
-    logger.error({ err, seasonId }, '[seasonCompletion] Platform fee transfer failed');
-  }
+  // Platform fee is collected at join; no season completion transfer needed.
 
-  // Winner payouts
-  const winnerId = placements.first?.playerId;
-  if (winnerId && firstAmount > 0) {
-    try {
-      const winnerWalletRes = await axios.get(`${WALLET_SERVICE_URL}/owner/${winnerId}`, { timeout: 10000 });
-      const winnerWalletId = winnerWalletRes.data?.data?.walletId || winnerWalletRes.data?.walletId;
-      if (winnerWalletId) {
+  if (!skipPayout && isDraw) {
+    const participants = Array.isArray(placements?.participants) && placements.participants.length > 0
+      ? placements.participants.filter(Boolean)
+      : season.tournamentPlayers.map((player) => player.playerId).filter(Boolean);
+    const perPlayerRefund = participants.length > 0
+      ? normalizeMoney(remaining / participants.length)
+      : 0;
+    if (participants.length === 0) {
+      logger.warn({ seasonId, tournamentId }, '[seasonCompletion] Draw refund skipped: no participants resolved');
+    }
+    logger.info(
+      { seasonId, tournamentId, participants: participants.length, perPlayerRefund, platformFee },
+      '[seasonCompletion] Processing draw refunds'
+    );
+    for (const participantId of participants) {
+      if (!participantId || perPlayerRefund <= 0) continue;
+      try {
+        const walletRes = await axios.get(`${WALLET_SERVICE_URL}/owner/${participantId}`, { timeout: 10000 });
+        const walletId = walletRes.data?.data?.walletId || walletRes.data?.walletId;
+        if (!walletId) continue;
         await transferFunds({
           fromWalletId: systemWallet.walletId,
-          toWalletId: winnerWalletId,
-          amount: firstAmount,
-          description: isWithAi ? 'Season winner prize (with_ai)' : 'Season winner prize',
-          metadata: { tournamentId, seasonId, type: 'winner_prize', gameType, platformFeePercent },
-          referenceNumber: `PRIZE_FIRST:${seasonId}:${winnerId}`,
+          toWalletId: walletId,
+          amount: perPlayerRefund,
+          description: isWithAi ? 'Draw refund (with_ai)' : 'Draw refund',
+          metadata: { tournamentId, seasonId, type: 'draw_refund', gameType, platformFeePercent },
+          referenceNumber: `DRAW_REFUND:${seasonId}:${participantId}`,
           fromUserId: 'system',
-          toUserId: winnerId
+          toUserId: participantId
         });
+      } catch (err) {
+        logger.error({ err, seasonId, participantId }, '[seasonCompletion] Draw refund failed');
       }
-    } catch (err) {
-      logger.error({ err, seasonId, winnerId }, '[seasonCompletion] First place payout failed');
     }
-  }
-
-  // For with_ai, skip runner-up and third
-  if (!isWithAi) {
-    const secondId = placements.second?.playerId;
-    if (secondId && secondAmount > 0) {
+  } else if (!skipPayout) {
+    // Winner payouts
+    const winnerId = normalizePlacementId(placements.first);
+    if (winnerId && firstAmount > 0) {
       try {
-        const secondWalletRes = await axios.get(`${WALLET_SERVICE_URL}/owner/${secondId}`, { timeout: 10000 });
-        const secondWalletId = secondWalletRes.data?.data?.walletId || secondWalletRes.data?.walletId;
-        if (secondWalletId) {
+        const winnerWalletRes = await axios.get(`${WALLET_SERVICE_URL}/owner/${winnerId}`, { timeout: 10000 });
+        const winnerWalletId = winnerWalletRes.data?.data?.walletId || winnerWalletRes.data?.walletId;
+        if (winnerWalletId) {
           await transferFunds({
             fromWalletId: systemWallet.walletId,
-            toWalletId: secondWalletId,
-            amount: secondAmount,
-            description: 'Season runner-up prize',
-            metadata: { tournamentId, seasonId, type: 'runner_up_prize', gameType },
-            referenceNumber: `PRIZE_SECOND:${seasonId}:${secondId}`,
+            toWalletId: winnerWalletId,
+            amount: firstAmount,
+            description: isWithAi ? 'Season winner prize (with_ai)' : 'Season winner prize',
+            metadata: { tournamentId, seasonId, type: 'winner_prize', gameType, platformFeePercent },
+            referenceNumber: `PRIZE_FIRST:${seasonId}:${winnerId}`,
             fromUserId: 'system',
-            toUserId: secondId
+            toUserId: winnerId
           });
         }
       } catch (err) {
-        logger.error({ err, seasonId, secondId }, '[seasonCompletion] Second place payout failed');
-      }
-    }
-
-    const thirdId = placements.third?.playerId;
-    if (thirdId && thirdAmount > 0) {
-      try {
-        const thirdWalletRes = await axios.get(`${WALLET_SERVICE_URL}/owner/${thirdId}`, { timeout: 10000 });
-        const thirdWalletId = thirdWalletRes.data?.data?.walletId || thirdWalletRes.data?.walletId;
-        if (thirdWalletId) {
-          await transferFunds({
-            fromWalletId: systemWallet.walletId,
-            toWalletId: thirdWalletId,
-            amount: thirdAmount,
-            description: 'Season third place prize',
-            metadata: { tournamentId, seasonId, type: 'third_place_prize', gameType },
-            referenceNumber: `PRIZE_THIRD:${seasonId}:${thirdId}`,
-            fromUserId: 'system',
-            toUserId: thirdId
-          });
-        }
-      } catch (err) {
-        logger.error({ err, seasonId, thirdId }, '[seasonCompletion] Third place payout failed');
+        logger.error({ err, seasonId, winnerId }, '[seasonCompletion] First place payout failed');
       }
     }
   }
+
+  // No payouts for second or third place - winner takes all
 
   logger.info(
-    { seasonId, tournamentId, platformFee, firstAmount, secondAmount, thirdAmount },
-    '[seasonCompletion] Payouts completed'
+    { seasonId, tournamentId, platformFee, firstAmount, draw: isDraw, skipPayout },
+    '[seasonCompletion] Payouts completed (winner takes all)'
   );
+
+  await prisma.season.updateMany({
+    where: { seasonId, tournamentId, status: { not: 'completed' } },
+    data: {
+      status: 'completed',
+      completedAt: endedAt ? new Date(endedAt) : new Date(),
+      finalMatchId: payload?.finalMatchId || null,
+      finalizedByJobId: payload?.finalizedByJobId || null,
+      errorReason: null
+    }
+  });
 
   await emitSeasonUpdate({
     tournamentId,

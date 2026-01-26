@@ -13,6 +13,7 @@ model Wallet {
   type          String   @default("player")
   currency      String   @default("TZS")
   balance       Decimal  @default(0) @db.Decimal(20, 2)
+  revenueBalance Decimal @default(0) @db.Decimal(20, 2)
   locked        Decimal  @default(0) @db.Decimal(20, 2)
   isActive      Boolean  @default(true)
   totalWins     Int      @default(0)

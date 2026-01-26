@@ -14,6 +14,8 @@ router.post('/deposit/:depositId/approve', authMiddleware, paymentController.app
 router.post('/deposit/:depositId/reject', authMiddleware, paymentController.rejectDeposit);
 router.get('/deposit/:referenceNumber', paymentController.getDepositStatus);
 router.get('/admin/deposits/pending', authMiddleware, paymentController.listPendingDeposits);
+router.get('/admin/deposits/by-tid', authMiddleware, paymentController.getDepositByTid);
+router.post('/admin/deposits/approve-by-tid', authMiddleware, paymentController.approveDepositByTid);
 
 // Withdrawal endpoints
 router.post('/withdrawal/initiate', authMiddleware, paymentController.initiateWithdrawal);
@@ -57,6 +59,14 @@ router.get('/float-adjustment/requests', authMiddleware, floatAdjustmentControll
 router.get('/float-adjustment/requests/:requestId', authMiddleware, floatAdjustmentController.getFloatAdjustmentById);
 router.post('/float-adjustment/:requestId/approve', authMiddleware, floatAdjustmentController.approveFloatAdjustment);
 router.post('/float-adjustment/:requestId/reject', authMiddleware, floatAdjustmentController.rejectFloatAdjustment);
+
+// TID-based topup approval endpoints
+router.post('/admin/sms-messages', authMiddleware, paymentController.storeSmsMessage);
+router.get('/admin/sms-messages/search', authMiddleware, paymentController.searchByTid);
+router.get('/admin/sms-messages', authMiddleware, paymentController.listSmsMessages);
+router.get('/admin/sms-messages/stats', authMiddleware, paymentController.getSmsMessageStats);
+router.post('/admin/deposits/:depositId/attach-message', authMiddleware, paymentController.attachMessageToDeposit);
+router.post('/admin/deposits/:depositId/approve-with-tid', authMiddleware, paymentController.approveDepositWithTid);
 
 // Health check
 router.get('/health', (req, res) => {

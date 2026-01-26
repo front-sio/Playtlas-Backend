@@ -6,7 +6,7 @@ const WALLET_SERVICE_URL = process.env.WALLET_SERVICE_URL || 'http://wallet-serv
 
 exports.payTournamentFee = async (req, res) => {
   try {
-    const { playerWalletId, amount, tournamentId, seasonId, userId } = req.body;
+    const { playerWalletId, amount, tournamentId, seasonId, userId, platformFeePercent } = req.body;
 
     if (!playerWalletId || !amount || !tournamentId || !seasonId || !userId) {
       return res.status(400).json({ success: false, error: 'Missing required fields' });
@@ -27,7 +27,8 @@ exports.payTournamentFee = async (req, res) => {
         playerWalletId,
         amount: parsedAmount,
         tournamentId,
-        seasonId
+        seasonId,
+        platformFeePercent
       }, {
         headers: {
           'Authorization': req.headers.authorization,
@@ -51,7 +52,8 @@ exports.payTournamentFee = async (req, res) => {
           processedAt: new Date(),
           metadata: {
             ip: req.ip,
-            userAgent: req.get('user-agent')
+            userAgent: req.get('user-agent'),
+            platformFeePercent
           }
         }
       });
@@ -112,7 +114,8 @@ exports.payTournamentFee = async (req, res) => {
             processedAt: new Date(),
             metadata: {
               ip: req.ip,
-              userAgent: req.get('user-agent')
+              userAgent: req.get('user-agent'),
+              platformFeePercent
             }
           }
         });
